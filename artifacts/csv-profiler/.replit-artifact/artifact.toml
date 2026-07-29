@@ -1,0 +1,31 @@
+kind = "data-app"
+previewPath = "/"
+title = "CSV Data Profiler"
+version = "1.0.0"
+id = "artifacts/csv-profiler"
+router = "path"
+
+[[integratedSkills]]
+name = "data-visualization"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 20792
+
+[services.development]
+run = "pnpm --filter @workspace/csv-profiler run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/csv-profiler", "run", "build" ]
+publicDir = "artifacts/csv-profiler/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "20792"
+BASE_PATH = "/"
