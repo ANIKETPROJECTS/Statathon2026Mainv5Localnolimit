@@ -39,6 +39,41 @@ function makeCellKsBytes(size: number, keyHex: string, ivSeed: number): Uint8Arr
   return Uint8Array.from({ length: size }, () => Math.floor(ksRng() * 256));
 }
 
+// ── PRNG step-by-step trace for the deep dive educational subpage ─────────────
+interface PRNGByteStep {
+  byteIndex: number;
+  aStart: number; bStart: number;
+  a1: number; a2: number; a3: number;   // after each a-side operation
+  b1: number; b2: number; b3: number;   // after each b-side operation
+  aFinal: number; bFinal: number;
+  sum32: number;
+  float: number;
+  byteVal: number;
+}
+
+function computePRNGSteps(combinedSeed: number, numBytes: number): PRNGByteStep[] {
+  const steps: PRNGByteStep[] = [];
+  let a = ((combinedSeed ^ 0x9e3779b9) >>> 0) || 1;
+  let b = ((combinedSeed ^ 0x6c62272e) >>> 0) || 2;
+  for (let idx = 0; idx < numBytes; idx++) {
+    const aStart = a;
+    const bStart = b;
+    // a transforms (matching makeKeystream exactly)
+    a ^= a << 13; a = a >>> 0; const a1 = a;
+    a ^= a >> 17;              const a2 = a;
+    a ^= a << 5;  a = a >>> 0; const a3 = a;
+    // b transforms
+    b ^= b >> 7;  b = b >>> 0; const b1 = b;
+    b ^= b << 9;  b = b >>> 0; const b2 = b;
+    b ^= b >> 8;  b = b >>> 0; const b3 = b;
+    const sum32 = ((a + b) >>> 0);
+    const float  = sum32 / 0x100000000;
+    const byteVal = Math.floor(float * 256);
+    steps.push({ byteIndex: idx, aStart, bStart, a1, a2, a3, b1, b2, b3, aFinal: a, bFinal: b, sum32, float, byteVal });
+  }
+  return steps;
+}
+
 // ── Multi-operation helpers ───────────────────────────────────────────────────
 
 function gcd(a: number, b: number): number { return b === 0 ? a : gcd(b, a % b); }
@@ -850,6 +885,8 @@ export function GuideSection() {
   const [cellValue, setCellValue] = useState("12345");
   const [encRoundIdx, setEncRoundIdx] = useState(0);
   const [decRoundIdx, setDecRoundIdx] = useState(0);
+  const [showKeystreamDeepDive, setShowKeystreamDeepDive] = useState(false);
+  const [deepDiveByte, setDeepDiveByte] = useState(0);
 
   const { alphanumeric } = useEncryptionSettings();
   const trace = useMemo(() => computeTrace(seeds, colName, cellValue), [seeds, colName, cellValue]);
@@ -865,8 +902,16 @@ export function GuideSection() {
 
   const totalSteps = STEP_LABELS.length;
 
-  function goNext() { if (step < totalSteps - 1) setStep(s => s + 1); }
-  function goBack() { if (step > 0) setStep(s => s - 1); }
+  function goNext() {
+    if (step < totalSteps - 1) {
+      setShowKeystreamDeepDive(false);
+      setStep(s => s + 1);
+    }
+  }
+  function goBack() {
+    if (step === 2 && showKeystreamDeepDive) { setShowKeystreamDeepDive(false); return; }
+    if (step > 0) setStep(s => s - 1);
+  }
 
   const encShifts = trace.encShifts[encRoundIdx] ?? [];
   const decShifts = trace.decShifts[decRoundIdx] ?? [];
@@ -880,7 +925,7 @@ export function GuideSection() {
           {STEP_LABELS.map((label, i) => (
             <button
               key={i}
-              onClick={() => setStep(i)}
+              onClick={() => { setShowKeystreamDeepDive(false); setStep(i); }}
               className="flex-1 flex flex-col items-center gap-1.5 group"
             >
               <div className={`w-full h-1.5 rounded-full transition-all ${i <= step ? "bg-indigo-500" : "bg-slate-200"}`} />
@@ -1384,8 +1429,313 @@ export function GuideSection() {
           </div>
         )}
 
+        {/* ══ STEP 2: Encryption — Keystream Deep Dive subpage ═══════ */}
+        {step === 2 && showKeystreamDeepDive && (() => {
+          const keyFirst8Str = trace.keys[encRoundIdx].slice(0, 8);
+          const keyFirst8    = parseInt(keyFirst8Str, 16);
+          const colIV        = trace.colIVs[encRoundIdx];
+          const combined     = (keyFirst8 ^ colIV) >>> 0;
+          const aInit        = ((combined ^ 0x9e3779b9) >>> 0) || 1;
+          const bInit        = ((combined ^ 0x6c62272e) >>> 0) || 2;
+          const prngSteps    = computePRNGSteps(combined, 8);
+          const sel          = prngSteps[deepDiveByte] ?? prngSteps[0];
+          const h8 = (n: number) => "0x" + n.toString(16).toUpperCase().padStart(8, "0");
+          const Dec = ({ n }: { n: number }) => <span className="text-slate-500 text-xs ml-1">= {n.toLocaleString()}</span>;
+          const HexVal = ({ n, color = "text-purple-700" }: { n: number; color?: string }) => (
+            <span className={`font-mono font-bold ${color}`}>{h8(n)}</span>
+          );
+          const OpRow = ({ label, before, after, note }: { label: string; before: number; after: number; note?: string }) => (
+            <div className="flex items-start gap-3 py-2 border-b border-slate-100 last:border-0">
+              <code className="text-xs bg-slate-100 px-2 py-0.5 rounded text-slate-700 font-mono shrink-0 mt-0.5">{label}</code>
+              <div className="flex-1 min-w-0">
+                <div className="text-xs text-slate-500">before: <HexVal n={before} color="text-blue-600" /></div>
+                <div className="text-xs text-slate-700 font-semibold mt-0.5">after:  <HexVal n={after} color="text-green-700" /><Dec n={after} /></div>
+                {note && <div className="text-xs text-amber-700 mt-1 bg-amber-50 border border-amber-200 rounded px-2 py-1">{note}</div>}
+              </div>
+            </div>
+          );
+
+          return (
+            <div className="w-full space-y-6">
+              {/* Breadcrumb */}
+              <div className="flex items-center gap-2 text-sm">
+                <button
+                  onClick={() => setShowKeystreamDeepDive(false)}
+                  className="text-indigo-600 hover:text-indigo-800 font-semibold flex items-center gap-1 transition-colors"
+                >
+                  <ChevronLeft className="w-3.5 h-3.5" /> Encrypting
+                </button>
+                <span className="text-slate-400">/</span>
+                <span className="text-slate-700 font-semibold">Keystream Deep Dive</span>
+                <span className="ml-auto text-xs text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">Round {encRoundIdx + 1}</span>
+              </div>
+
+              {/* Title */}
+              <div className="text-center">
+                <div className="text-4xl mb-3">🔬</div>
+                <h2 className="text-2xl font-bold text-slate-800 mb-2">How a Combined Seed Generates Keystream Bytes</h2>
+                <p className="text-slate-500 text-sm">Exact step-by-step trace of the xorshift128+ PRNG — using live values from your current input</p>
+              </div>
+
+              {/* Round selector */}
+              <div className="flex items-center justify-center gap-2 flex-wrap">
+                {[0,1,2,3].map(i => (
+                  <button key={i}
+                    onClick={() => { setEncRoundIdx(i); setDeepDiveByte(0); }}
+                    className={`px-4 py-1.5 rounded-full text-xs font-semibold transition-all border-2 ${encRoundIdx === i ? "bg-indigo-600 text-white border-indigo-600 shadow" : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50"}`}
+                  >Round {i+1}</button>
+                ))}
+              </div>
+
+              {/* §1 — Combined Seed */}
+              <BigCard color="bg-white border-purple-200">
+                <h3 className="text-base font-bold text-slate-800 mb-1">§1 — Combined Seed</h3>
+                <p className="text-slate-500 text-xs mb-4">The round key's first 8 hex characters are XOR-ed with the Column IV to produce a unique combined seed for this round+column combination.</p>
+                <div className="flex flex-col items-center gap-0 font-mono text-sm">
+                  <div className="bg-blue-50 border border-blue-200 rounded-xl px-6 py-3 text-center">
+                    <div className="text-xs text-blue-500 font-semibold uppercase mb-1">Round Key (first 8 hex)</div>
+                    <span className="text-blue-700 font-bold text-base">0x{keyFirst8Str.toUpperCase()}</span>
+                    <span className="text-slate-400 text-xs ml-2">= {keyFirst8.toLocaleString()}</span>
+                  </div>
+                  <div className="text-slate-400 font-bold text-xl py-1 select-none">⊕</div>
+                  <div className="bg-amber-50 border border-amber-200 rounded-xl px-6 py-3 text-center">
+                    <div className="text-xs text-amber-600 font-semibold uppercase mb-1">Column IV</div>
+                    <span className="text-amber-700 font-bold text-base">{h8(colIV)}</span>
+                    <span className="text-slate-400 text-xs ml-2">= {colIV.toLocaleString()}</span>
+                  </div>
+                  <div className="text-slate-400 font-bold text-xl py-1 select-none">=</div>
+                  <div className="bg-green-50 border-2 border-green-300 rounded-xl px-6 py-3 text-center">
+                    <div className="text-xs text-green-600 font-semibold uppercase mb-1">Combined Seed</div>
+                    <span className="text-green-700 font-bold text-lg">{h8(combined)}</span>
+                    <span className="text-slate-400 text-xs ml-2">= {combined.toLocaleString()}</span>
+                  </div>
+                </div>
+                <div className="mt-4 bg-purple-50 border border-purple-200 rounded-xl p-3 text-xs text-purple-800">
+                  <strong>Why XOR?</strong> XOR mixes two values without bias — every output bit depends on exactly two input bits. The combined seed initialises the PRNG state for this specific round × column combination, ensuring the keystream is unique even if two columns share the same key.
+                </div>
+              </BigCard>
+
+              {/* §2 — Initialise PRNG */}
+              <BigCard color="bg-white border-indigo-200">
+                <h3 className="text-base font-bold text-slate-800 mb-1">§2 — Initialise PRNG State</h3>
+                <p className="text-slate-500 text-xs mb-4">
+                  The combined seed initialises two 32-bit state variables <code className="bg-slate-100 px-1 rounded">a</code> and <code className="bg-slate-100 px-1 rounded">b</code> by XOR-ing with two fixed magic constants (derived from the golden ratio).
+                </p>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-4">
+                    <div className="text-xs font-semibold text-indigo-600 uppercase mb-2">State variable <em>a</em></div>
+                    <div className="font-mono text-xs space-y-1">
+                      <div><span className="text-slate-500">seed</span>            = <HexVal n={combined} color="text-green-700" /></div>
+                      <div><span className="text-slate-500">XOR 0x9E3779B9</span> = <HexVal n={aInit} /></div>
+                    </div>
+                    <div className="mt-2 border-t border-indigo-200 pt-2 font-mono text-sm font-bold">
+                      <span className="text-slate-500">a</span> = <HexVal n={aInit} /><Dec n={aInit} />
+                    </div>
+                  </div>
+                  <div className="bg-rose-50 border border-rose-200 rounded-xl p-4">
+                    <div className="text-xs font-semibold text-rose-600 uppercase mb-2">State variable <em>b</em></div>
+                    <div className="font-mono text-xs space-y-1">
+                      <div><span className="text-slate-500">seed</span>            = <HexVal n={combined} color="text-green-700" /></div>
+                      <div><span className="text-slate-500">XOR 0x6C62272E</span> = <HexVal n={bInit} color="text-rose-700" /></div>
+                    </div>
+                    <div className="mt-2 border-t border-rose-200 pt-2 font-mono text-sm font-bold">
+                      <span className="text-slate-500">b</span> = <HexVal n={bInit} color="text-rose-700" /><Dec n={bInit} />
+                    </div>
+                  </div>
+                </div>
+                <p className="text-xs text-slate-400 mt-3">
+                  ✦ The <code className="bg-slate-100 px-1 rounded">|| 1</code> / <code className="bg-slate-100 px-1 rounded">|| 2</code> fallbacks only fire if XOR produces zero — an extremely rare edge case that prevents the PRNG from locking to all-zeros.
+                </p>
+              </BigCard>
+
+              {/* §3–§6 — Byte-by-byte detail with interactive selector */}
+              <BigCard color="bg-white border-green-200">
+                <h3 className="text-base font-bold text-slate-800 mb-1">§3–§6 — One PRNG Call → One Byte</h3>
+                <p className="text-slate-500 text-xs mb-4">Each call to the PRNG runs six operations on <em>a</em> and <em>b</em>, combines them, and produces one byte. Select a byte to inspect its full transformation.</p>
+
+                {/* Byte selector */}
+                <div className="flex flex-wrap gap-2 mb-5">
+                  {prngSteps.map((s, i) => (
+                    <button key={i}
+                      onClick={() => setDeepDiveByte(i)}
+                      className={`flex flex-col items-center px-3 py-2 rounded-xl border-2 font-semibold transition-all ${deepDiveByte === i ? "bg-green-600 border-green-600 text-white shadow-md" : "bg-white border-slate-200 text-slate-600 hover:bg-green-50 hover:border-green-300"}`}
+                    >
+                      <span className="text-xs opacity-70">Byte {i+1}</span>
+                      <span className="text-base leading-none">{s.byteVal}</span>
+                    </button>
+                  ))}
+                  <div className="flex items-center text-xs text-slate-400 px-2">… continues</div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  {/* Transform a */}
+                  <div>
+                    <div className="text-xs font-bold text-indigo-700 uppercase mb-2 flex items-center gap-1.5">
+                      <span className="bg-indigo-100 text-indigo-700 rounded-lg px-2 py-0.5 font-mono">a</span> transforms
+                    </div>
+                    <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-3 space-y-0">
+                      <div className="pb-2 mb-1 border-b border-indigo-100 text-xs text-indigo-600 font-semibold">
+                        start: <span className="font-mono font-bold text-slate-800">{h8(sel.aStart)}</span><Dec n={sel.aStart} />
+                      </div>
+                      <OpRow label="a ^= a << 13; a >>>= 0" before={sel.aStart} after={sel.a1} />
+                      <OpRow label="a ^= a >> 17" before={sel.a1} after={sel.a2} />
+                      <OpRow label="a ^= a << 5; a >>>= 0" before={sel.a2} after={sel.a3} />
+                      <div className="pt-2 mt-1 border-t border-indigo-200 text-xs font-bold text-indigo-800">
+                        final a = <HexVal n={sel.aFinal} color="text-indigo-700" /><Dec n={sel.aFinal} />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Transform b */}
+                  <div>
+                    <div className="text-xs font-bold text-rose-700 uppercase mb-2 flex items-center gap-1.5">
+                      <span className="bg-rose-100 text-rose-700 rounded-lg px-2 py-0.5 font-mono">b</span> transforms
+                    </div>
+                    <div className="bg-rose-50 border border-rose-200 rounded-xl p-3 space-y-0">
+                      <div className="pb-2 mb-1 border-b border-rose-100 text-xs text-rose-600 font-semibold">
+                        start: <span className="font-mono font-bold text-slate-800">{h8(sel.bStart)}</span><Dec n={sel.bStart} />
+                      </div>
+                      <OpRow label="b ^= b >> 7; b >>>= 0" before={sel.bStart} after={sel.b1}
+                        note={sel.bStart > 0x7FFFFFFF ? `⚠ b's high bit is 1 → JavaScript's >> is a SIGNED arithmetic right shift: new left bits fill with 1s (not 0s). Hence ${h8(sel.bStart)} >> 7 ≠ simple logical shift.` : undefined} />
+                      <OpRow label="b ^= b << 9; b >>>= 0" before={sel.b1} after={sel.b2} />
+                      <OpRow label="b ^= b >> 8; b >>>= 0" before={sel.b2} after={sel.b3} />
+                      <div className="pt-2 mt-1 border-t border-rose-200 text-xs font-bold text-rose-800">
+                        final b = <HexVal n={sel.bFinal} color="text-rose-700" /><Dec n={sel.bFinal} />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* >> vs >>> note */}
+                <div className="mt-4 bg-amber-50 border border-amber-300 rounded-xl p-4 text-xs text-amber-900">
+                  <strong>⚠ <code className="bg-amber-100 px-1 rounded">{">>"}</code> vs <code className="bg-amber-100 px-1 rounded">{">>>"}</code> — they are not the same in JavaScript:</strong>
+                  <div className="mt-2 grid grid-cols-2 gap-3">
+                    <div className="bg-white border border-amber-200 rounded-lg p-2">
+                      <div className="font-bold text-red-700 mb-1"><code>{">>"}</code> signed arithmetic shift</div>
+                      <div>Fills new left bits with the <strong>original sign bit</strong>. If the high bit was 1, new bits are 1. Preserves two's-complement sign.</div>
+                      <div className="font-mono mt-1 text-red-800">0xE2EF7B23 &gt;&gt; 7 = 0xFFC5DEF6</div>
+                    </div>
+                    <div className="bg-white border border-amber-200 rounded-lg p-2">
+                      <div className="font-bold text-green-700 mb-1"><code>{">>>"}</code> unsigned logical shift</div>
+                      <div>Always fills new left bits with <strong>0</strong>. Treats the value as unsigned. Used after some steps to clamp to 32-bit unsigned.</div>
+                      <div className="font-mono mt-1 text-green-800">0xE2EF7B23 &gt;&gt;&gt; 7 = 0x01C5DEF6</div>
+                    </div>
+                  </div>
+                  <div className="mt-2 text-amber-800">The implementation uses <code className="bg-amber-100 px-1 rounded">{">>"}</code> for the right-shift operations inside b-transforms, then <code className="bg-amber-100 px-1 rounded">{">>>"} 0</code> afterwards to normalise to unsigned 32-bit.</div>
+                </div>
+
+                {/* §5 — Combine */}
+                <div className="mt-5">
+                  <h4 className="text-sm font-bold text-slate-700 mb-3">§5 — Combine a and b</h4>
+                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
+                    <div className="font-mono text-xs space-y-1">
+                      <div><span className="text-indigo-600 font-bold">a</span> = <HexVal n={sel.aFinal} color="text-indigo-700" /> <span className="text-slate-400">({sel.aFinal.toLocaleString()})</span></div>
+                      <div><span className="text-rose-600 font-bold">b</span> = <HexVal n={sel.bFinal} color="text-rose-700" /> <span className="text-slate-400">({sel.bFinal.toLocaleString()})</span></div>
+                      <div className="border-t border-slate-200 mt-2 pt-2">
+                        <span className="text-slate-500">(a + b) raw</span> = {(sel.aFinal + sel.bFinal).toLocaleString()}
+                        {sel.aFinal + sel.bFinal > 0xFFFFFFFF && <span className="text-red-600 ml-2 text-xs font-semibold">← overflows 32 bits!</span>}
+                      </div>
+                      <div>
+                        <span className="text-slate-500">(a + b) &gt;&gt;&gt; 0</span> = <HexVal n={sel.sum32} color="text-green-700" /> <span className="text-slate-400">({sel.sum32.toLocaleString()})</span>
+                      </div>
+                    </div>
+                    <p className="text-xs text-slate-500 mt-2">
+                      <code className="bg-slate-100 px-1 rounded">{">>>"} 0</code> forces the result into an unsigned 32-bit integer — if the sum overflowed, only the lower 32 bits are kept.
+                    </p>
+                  </div>
+                </div>
+
+                {/* §6 — Convert to byte */}
+                <div className="mt-5">
+                  <h4 className="text-sm font-bold text-slate-700 mb-3">§6 — Convert PRNG Output to Byte</h4>
+                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
+                    <div className="font-mono text-xs space-y-1.5">
+                      <div><span className="text-slate-500">{sel.sum32.toLocaleString()} / 4,294,967,296</span> = <span className="text-slate-700">{sel.float.toFixed(15)}…</span></div>
+                      <div><span className="text-slate-500">× 256</span> = <span className="text-slate-700">{(sel.float * 256).toFixed(6)}…</span></div>
+                      <div><span className="text-slate-500">Math.floor(…)</span> = <span className="text-green-700 font-bold text-lg">{sel.byteVal}</span></div>
+                    </div>
+                    <div className="mt-3 bg-blue-50 border border-blue-200 rounded-lg p-3 text-xs text-blue-800">
+                      <strong>Shortcut — upper 8 bits:</strong> Multiplying a 32-bit unsigned integer by 256 and flooring is equivalent to extracting its upper 8 bits.
+                      <span className="font-mono ml-1">{h8(sel.sum32)} → upper 8 bits = 0x{sel.byteVal.toString(16).toUpperCase().padStart(2,"0")} = {sel.byteVal}</span>.
+                      <span className="ml-1 text-blue-700">Note: this selects the <em>upper</em> 8 bits, NOT the lower 8.</span>
+                    </div>
+                    <div className="mt-3 text-center">
+                      <span className="text-xs text-slate-500 uppercase font-semibold">Keystream byte {deepDiveByte + 1} =</span>
+                      <span className="ml-2 inline-block bg-green-600 text-white font-bold text-xl px-4 py-1.5 rounded-xl shadow">{sel.byteVal}</span>
+                    </div>
+                  </div>
+                </div>
+              </BigCard>
+
+              {/* §7 — Flow diagram */}
+              <BigCard color="bg-white border-teal-200">
+                <h3 className="text-base font-bold text-slate-800 mb-1">§7 — The PRNG Does Not Restart</h3>
+                <p className="text-slate-500 text-xs mb-5">
+                  After producing byte {prngSteps[0]?.byteVal}, the PRNG's internal state is the updated <em>a</em> and <em>b</em>. Those become the starting state for the <em>next</em> call — the combined seed {h8(combined)} is never revisited.
+                </p>
+                <div className="flex flex-col items-center gap-0 text-sm font-mono">
+                  <div className="bg-green-100 border-2 border-green-300 rounded-xl px-5 py-2 font-bold text-green-800 text-center">
+                    Combined Seed<br/><span className="text-base">{h8(combined)}</span>
+                  </div>
+                  <div className="text-slate-400 text-xl py-1 select-none">↓</div>
+                  <div className="bg-indigo-50 border border-indigo-200 rounded-lg px-4 py-1.5 text-xs text-indigo-700 font-semibold">Initialise PRNG (a, b)</div>
+                  {prngSteps.map((s, i) => (
+                    <div key={i} className="flex flex-col items-center gap-0">
+                      <div className="text-slate-400 text-xl py-0.5 select-none">↓</div>
+                      <div className={`rounded-xl px-5 py-2 border-2 font-bold text-center ${i === deepDiveByte ? "bg-green-600 border-green-600 text-white shadow-lg scale-105" : "bg-slate-50 border-slate-200 text-slate-700"}`}
+                           onClick={() => setDeepDiveByte(i)} style={{cursor:"pointer"}}>
+                        <span className="text-xs font-normal opacity-70">Byte {i+1}</span>
+                        <br /><span className="text-lg">{s.byteVal}</span>
+                      </div>
+                      {i < prngSteps.length - 1 && <div className="text-slate-300 text-xs py-0.5">updated state (a={h8(s.aFinal)}, b={h8(s.bFinal)})</div>}
+                    </div>
+                  ))}
+                  <div className="text-slate-400 text-xl py-0.5 select-none">↓</div>
+                  <div className="text-slate-400 text-xs italic">continues as many times as required</div>
+                </div>
+                <p className="text-xs text-slate-400 mt-5">✦ Click any byte in the diagram to see its a/b transformation detail above.</p>
+              </BigCard>
+
+              {/* §8 — Why enough bytes */}
+              <BigCard color="bg-white border-blue-200">
+                <h3 className="text-base font-bold text-slate-800 mb-1">§8 — Why This Can Generate Enough Bytes for Any Input</h3>
+                <p className="text-slate-500 text-xs mb-4">
+                  The combined seed is only the <strong>starting point</strong>. The algorithm never pre-computes a fixed number of bytes — it calls the PRNG closure as many times as needed, updating state each time.
+                </p>
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 mb-4">
+                  <div className="text-xs font-semibold text-slate-600 uppercase mb-2">Bytes consumed per round</div>
+                  <div className="text-xs font-semibold text-slate-500 mb-3">5 keystream bytes × each character = total bytes per round</div>
+                  <table className="w-full text-xs border-collapse">
+                    <thead>
+                      <tr className="bg-slate-100">
+                        <th className="px-3 py-2 text-left text-slate-600">Cell value length</th>
+                        <th className="px-3 py-2 text-left text-slate-600">Bytes per round</th>
+                        <th className="px-3 py-2 text-left text-slate-600">Combined seeds used</th>
+                        <th className="px-3 py-2 text-left text-slate-600">Total PRNG calls</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[2, 5, 20, 100].map((len, i) => (
+                        <tr key={i} className={i % 2 === 0 ? "bg-white" : "bg-slate-50"}>
+                          <td className="px-3 py-2 font-mono font-bold text-slate-700">{len} chars</td>
+                          <td className="px-3 py-2 font-mono text-indigo-600">{len * 5} bytes</td>
+                          <td className="px-3 py-2 font-mono text-slate-600">4 (one per round)</td>
+                          <td className="px-3 py-2 font-mono text-green-700">{len * 5 * 4} calls</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 text-xs text-blue-900">
+                  <strong>Key insight:</strong> The number of combined seeds is always <strong>4</strong> (one per encryption round) — it does not grow with input length. Only the number of PRNG calls per round grows. The xorshift128+ state machine handles arbitrarily long inputs without any extra seeding.
+                </div>
+              </BigCard>
+            </div>
+          );
+        })()}
+
         {/* ══ STEP 2: Encryption ══════════════════════════════════════ */}
-        {step === 2 && (
+        {step === 2 && !showKeystreamDeepDive && (
           <div className="w-full space-y-8">
             <div className="text-center">
               <div className="text-5xl mb-4">🔐</div>
@@ -1455,7 +1805,16 @@ export function GuideSection() {
                 </div>
               </div>
               <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 text-xs text-blue-800">
-                <strong>Why 5 bytes per character?</strong> Each character goes through <strong>5 sequential sub-operations</strong> per round: add, subtract, multiply (by a number coprime to the alphabet size), or complement/flip. Using 5 independent keystream bytes means an attacker cannot predict the operation sequence from any single byte. The character’s alphabet index bounces through 5 distinct mathematical transformations before producing the final output.
+                <strong>Why 5 bytes per character?</strong> Each character goes through <strong>5 sequential sub-operations</strong> per round: add, subtract, multiply (by a number coprime to the alphabet size), or complement/flip. Using 5 independent keystream bytes means an attacker cannot predict the operation sequence from any single byte. The character's alphabet index bounces through 5 distinct mathematical transformations before producing the final output.
+              </div>
+              <div className="mt-4 flex justify-end">
+                <button
+                  onClick={() => { setDeepDiveByte(0); setShowKeystreamDeepDive(true); }}
+                  className="flex items-center gap-2 px-5 py-2.5 rounded-xl font-semibold text-sm bg-green-700 text-white hover:bg-green-800 transition-colors shadow"
+                >
+                  🔬 Deep Dive — How Each Byte is Generated
+                  <ChevronRight className="w-4 h-4" />
+                </button>
               </div>
             </BigCard>
 
@@ -2815,7 +3174,7 @@ export function GuideSection() {
             </BigCard>
 
             <div className="text-center">
-              <button onClick={() => setStep(0)}
+              <button onClick={() => { setShowKeystreamDeepDive(false); setStep(0); }}
                 className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-indigo-600 text-white font-semibold hover:bg-indigo-700 transition-colors">
                 <RotateCcw className="w-4 h-4" />
                 Try different values
@@ -2840,7 +3199,7 @@ export function GuideSection() {
           {/* Dot pips */}
           <div className="flex gap-2">
             {STEP_LABELS.map((_, i) => (
-              <button key={i} onClick={() => setStep(i)} className={`h-2.5 rounded-full transition-all ${i === step ? "bg-indigo-600 w-6" : i < step ? "bg-green-400 w-2.5" : "bg-slate-300 w-2.5"}`} />
+              <button key={i} onClick={() => { setShowKeystreamDeepDive(false); setStep(i); }} className={`h-2.5 rounded-full transition-all ${i === step ? "bg-indigo-600 w-6" : i < step ? "bg-green-400 w-2.5" : "bg-slate-300 w-2.5"}`} />
             ))}
           </div>
 

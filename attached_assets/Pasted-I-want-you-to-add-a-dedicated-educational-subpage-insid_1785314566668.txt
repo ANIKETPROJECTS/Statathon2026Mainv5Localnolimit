@@ -1,0 +1,236 @@
+I want you to add a dedicated educational subpage inside the existing ENCRYPTION step of the "How Anonymization Works — Interactive Guide".
+
+IMPORTANT:
+- Do not change the actual encryption/anonymization algorithm.
+- Do not change any existing calculations.
+- This is only an educational/explanation UI addition.
+- Use the ACTUAL implementation from artifacts/csv-profiler/src/lib/anonymize.ts as the source of truth.
+- Keep the design consistent with the existing interactive guide.
+
+SUBPAGE PURPOSE:
+Explain exactly how a Combined Seed generates the keystream bytes.
+
+Use the current Round 1 example:
+
+Round Key first 8 hex:
+0xC869073B
+
+Column IV:
+0x46E45B36
+
+Combined Seed:
+0xC869073B XOR 0x46E45B36
+= 0x8E8D5C0D
+
+Then explain in detail how:
+
+0x8E8D5C0D → first keystream byte = 29
+
+Create a clear step-by-step visualization.
+
+SECTION 1 — Combined Seed
+
+Show:
+
+0xC869073B
+XOR
+0x46E45B36
+=
+0x8E8D5C0D
+
+Explain that this combined seed initializes the PRNG for this round/column.
+
+SECTION 2 — Initialize PRNG State
+
+Show:
+
+a = seed XOR 0x9E3779B9
+  = 0x8E8D5C0D XOR 0x9E3779B9
+  = 0x10BA25B4
+
+b = seed XOR 0x6C62272E
+  = 0x8E8D5C0D XOR 0x6C62272E
+  = 0xE2EF7B23
+
+Explain that a and b are the two 32-bit internal state variables.
+
+SECTION 3 — Transform a
+
+Show each operation separately:
+
+Start:
+a = 0x10BA25B4
+
+a ^= a << 13
+→ 0x540CA5B4
+
+a ^= a >> 17
+→ 0x540C8FB2
+
+a ^= a << 5
+→ 0xD59D79F2
+
+Final:
+a = 0xD59D79F2
+
+SECTION 4 — Transform b
+
+Show:
+
+Start:
+b = 0xE2EF7B23
+
+b ^= b >> 7
+→ 0x1D2AA5D5
+
+b ^= b << 9
+→ 0x48610FD5
+
+b ^= b >> 8
+→ 0x48296EDA
+
+Final:
+b = 0x48296EDA
+
+VERY IMPORTANT:
+Add an explanation that JavaScript `>>` is a SIGNED arithmetic right shift.
+
+For example:
+
+0xE2EF7B23 >> 7
+= 0xFFC5DEF6
+
+Because the highest bit is 1, `>>` fills the new left-side bits with 1s.
+
+Make it clear that `>>` and `>>>` are different and that the actual implementation uses `>>` here.
+
+SECTION 5 — Combine a and b
+
+Show:
+
+a = 0xD59D79F2
+b = 0x48296EDA
+
+(a + b) >>> 0
+= 0x1DC6E8CC
+
+Decimal:
+499,574,988
+
+Explain that `>>> 0` forces the result into an unsigned 32-bit integer and keeps the lower 32 bits if the addition overflows.
+
+SECTION 6 — Convert PRNG Output to Byte
+
+Show the exact calculation:
+
+499,574,988 / 4,294,967,296
+= 0.116316366...
+
+0.116316366... × 256
+= 29.7769...
+
+floor(29.7769...)
+= 29
+
+Therefore:
+
+FIRST KEYSTREAM BYTE = 29
+
+Also explain the equivalent shortcut:
+
+0x1DC6E8CC
+
+Upper 8 bits = 0x1D
+
+0x1D = 29 decimal
+
+IMPORTANT:
+Do NOT say this selects the lower 8 bits. Scaling a 32-bit unsigned value by 256 and flooring effectively selects the UPPER 8 bits.
+
+SECTION 7 — How the Next Byte is Generated
+
+Explain that the PRNG does NOT restart from 0x8E8D5C0D.
+
+After byte 29 is generated, its internal state is now:
+
+a = 0xD59D79F2
+b = 0x48296EDA
+
+Those values become the starting state for the next PRNG call.
+
+Run the same operations again and show that the next byte becomes:
+
+105
+
+Then explain:
+
+same process again → 238
+same process again → 33
+same process again → 242
+...
+
+So visually show:
+
+Combined Seed
+0x8E8D5C0D
+      ↓
+Initialize PRNG
+      ↓
+29
+      ↓
+updated state
+      ↓
+105
+      ↓
+updated state
+      ↓
+238
+      ↓
+33
+      ↓
+242
+      ↓
+continues as many times as required
+
+SECTION 8 — Why This Can Generate Enough Bytes
+
+Explain that the combined seed is only the STARTING POINT.
+
+The algorithm does NOT store a fixed number of keystream bytes.
+
+The PRNG repeatedly updates its internal state and generates another byte whenever required.
+
+In this anonymization algorithm:
+
+5 keystream bytes are consumed per character per round.
+
+Therefore:
+
+2-character value → 10 bytes per round
+5-character value → 25 bytes per round
+20-character value → 100 bytes per round
+100-character value → 500 bytes per round
+
+The number of combined seeds remains 4 because there are 4 encryption rounds.
+
+Input length only determines how many times each round's PRNG is called.
+
+UI REQUIREMENTS:
+
+Make this a dedicated subpage within the Encryption step.
+
+It should have:
+- Back/Next navigation consistent with the existing guide
+- clear cards for each calculation
+- hexadecimal values highlighted
+- decimal values where useful
+- arrows/flow diagrams between stages
+- explanatory notes for `>>`, `>>> 0`, XOR, and floor
+- a final visual summary showing:
+  0x8E8D5C0D → PRNG → 29, 105, 238, 33, 242...
+
+Also include a small interactive option if practical where the user can click:
+"Byte 1", "Byte 2", "Byte 3", etc.
+and see the a/b state transformations that generated that byte.
+
+Most importantly, all displayed calculations must be generated/verified against the actual functions in anonymize.ts. Do not hardcode incorrect educational calculations that can drift from the real implementation.
