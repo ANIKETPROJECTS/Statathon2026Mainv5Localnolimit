@@ -1,58 +1,36 @@
 # AIRAVATA DEA — CSV Data Profiler
 
-## Project overview
+## Overview
 
-A monorepo web application for converting, anonymizing, and risk-assessing fixed-width format (FWF) survey datasets (e.g. NSSO/HCES). The app converts FWF files to CSV, profiles the data, performs privacy risk assessment using the Prosecutor Attack model (k-anonymity, l-diversity, t-closeness), and generates Word/CSV risk reports.
+A pnpm monorepo containing a CSV/fixed-width file conversion, anonymisation, and risk assessment web app (React + Vite), backed by an Express API server.
 
-## Stack
+### Packages
 
-- **Frontend**: React 19, Vite 7, Tailwind CSS 4, Radix UI, TanStack Query/Table, Recharts, Wouter
-- **Backend**: Express 5, Pino logging
-- **Database**: Drizzle ORM + PostgreSQL
-- **Package manager**: pnpm (workspaces monorepo)
-- **Language**: TypeScript
-
-## Monorepo layout
-
-```
-artifacts/
-  csv-profiler/     # Main React frontend (port 5000 in dev)
-  api-server/       # Express backend (port 3001 in dev)
-  mockup-sandbox/   # UI component prototyping environment
-lib/
-  db/               # Drizzle ORM schema and PostgreSQL client
-  api-spec/         # OpenAPI definition + Orval codegen config
-  api-client-react/ # Generated TanStack Query hooks
-  api-zod/          # Generated Zod schemas
-```
+| Path | Name | Purpose |
+|------|------|---------|
+| `artifacts/csv-profiler` | `@workspace/csv-profiler` | React/Vite frontend — FWF converter, CSV profiler, risk assessment |
+| `artifacts/api-server` | `@workspace/api-server` | Express API (port 3001 in dev) |
+| `lib/api-client-react` | `@workspace/api-client-react` | Tanstack Query hooks for the API |
+| `lib/api-zod` | `@workspace/api-zod` | Shared Zod schemas |
+| `lib/db` | `@workspace/db` | Drizzle ORM schema + migrations (PostgreSQL) |
 
 ## How to run
 
-The configured workflow `artifacts/csv-profiler: web` starts both the frontend (Vite) and the API server together:
+The **Start application** workflow runs both the Vite dev server and the API server together:
 
 ```
 pnpm --filter @workspace/csv-profiler run dev
 ```
 
-This runs:
-- Vite dev server on a dynamic port (previewed by Replit)
-- API server on port 3001
+- Frontend: http://localhost:5000  
+- API server: http://localhost:3001
 
-## Environment
-
-- `DATABASE_URL` — needs to be provisioned via Replit's PostgreSQL integration; once set, run `pnpm --filter @workspace/db run push` to apply the schema
-- `SESSION_SECRET` — stored as a Replit Secret
-
-## Initial setup
-
-On a fresh clone or import, run:
+Install all dependencies from the workspace root:
 
 ```
 pnpm install
 ```
 
-Then start the app with the `artifacts/csv-profiler: web` workflow (covers both Vite frontend on port 5000 and Express API on port 3001).
-
 ## User preferences
 
-- Keep existing monorepo structure and stack — do not restructure or migrate.
+_None recorded yet._

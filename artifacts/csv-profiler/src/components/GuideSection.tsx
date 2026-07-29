@@ -1433,7 +1433,7 @@ export function GuideSection() {
             <BigCard color="bg-white border-green-200">
               <h3 className="text-lg font-bold text-slate-800 mb-2">🟢 Sub-step B: Generating the Keystream</h3>
               <p className="text-slate-500 text-sm leading-relaxed mb-4">
-                With the Column IV in hand, we XOR it with the first 8 hex characters of the round key to get a <strong>combined seed</strong>. This combined seed is fed into the <strong>xorshift128+</strong> pseudo-random number generator, which produces a stream of random bytes (0–255) — one byte per character of the cell value.
+                With the Column IV in hand, we XOR it with the first 8 hex characters of the round key to get a <strong>combined seed</strong>. This combined seed is fed into the <strong>xorshift128+</strong> pseudo-random number generator, which produces a stream of random bytes (0–255) — five keystream bytes per character of the cell value.
               </p>
               <div className="grid grid-cols-2 gap-4 mb-4">
                 <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
