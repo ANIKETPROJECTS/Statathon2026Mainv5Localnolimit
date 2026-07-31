@@ -1,0 +1,32 @@
+A quick caveat before the prompt: no real system can be truthfully labeled "unhackable" — I'll frame the prompt around *hardening against every attack vector we identified* and *documenting residual limitations honestly*, rather than asserting an absolute claim that wouldn't hold up. Here's the prompt:
+
+---
+
+```
+Harden the AIRAVATA DEA anonymization/encryption system against the following identified vulnerabilities. Do not weaken or remove the existing format-preserving property (output must retain the same character class/length as input).
+
+ISSUES TO FIX:
+
+1. LOW SEED ENTROPY: The master key is derived from 4 small, often human-guessable seed numbers (e.g. small integers, years). Even though they're expanded into a 256-bit key via PRNG, the real brute-force search space is bounded by the seed entropy, not 256 bits. Increase effective entropy — e.g. require high-entropy seed material (cryptographically random, sufficiently long), or combine seeds with a proper KDF (PBKDF2/Argon2/HKDF) that includes a work factor, so brute-forcing the seed space is computationally infeasible.
+
+2. NO PER-RECORD RANDOMIZATION (critical — reused keystream): Currently the per-character keystream is derived only from {round, round key, column name}. This means every row/record in the same column reuses the identical keystream at each character position — equivalent to a substitution cipher applied uniformly down a column. This allows:
+   - Full column recovery from a single known plaintext-ciphertext pair
+   - Frequency analysis attacks with zero known plaintexts
+   - Cross-record linkage/re-identification via matching ciphertext patterns, even without decrypting anything
+   Fix this by injecting a per-record, per-cell (or per-row) nonce/salt into the keystream derivation (e.g. hash of column name + row-unique identifier + round key), so identical plaintext values in the same column never produce identical ciphertext. Ensure the nonce/salt is stored or deterministically re-derivable so decryption still works, without leaking information about the plaintext.
+
+3. NO INTER-CHARACTER DIFFUSION: Each character is transformed independently based on its own keystream byte, so each digit position can be attacked in isolation. Introduce chaining/diffusion between characters within a value (e.g. CBC-like feedback within the format-preserving cipher construction) so a single-character attack doesn't decompose the whole value.
+
+4. NO INTEGRITY/TAMPER PROTECTION: Confirm whether any authentication (MAC) is applied to detect tampering with anonymized values, and if not, add one where feasible without breaking format preservation (e.g. a separate integrity/audit layer alongside the FPE output).
+
+REQUIREMENTS:
+- Preserve full backward-compatible decryption logic and the deterministic, reversible design where required by the product.
+- After implementing fixes, do a security self-review pass: explicitly attempt to construct the same attacks described above (known-plaintext column recovery, frequency analysis, cross-record linkage, ciphertext-only brute force) against the new design and report whether each attack still succeeds, partially succeeds, or is mitigated. Do not claim the system is "unhackable" — instead state precisely which threat models are covered and which residual risks or assumptions remain (e.g. reliance on secure seed storage, reliance on nonce uniqueness).
+
+DELIVERABLE:
+Create a markdown file named `newfile.md` in the project root that documents the new/updated working of the algorithm, including:
+- What changed and why, mapped to each vulnerability above
+- The new keystream/nonce derivation logic in detail
+- A worked example trace (similar in detail to the existing interactive guide) showing the new output for a sample value
+- An explicit "Threat Model & Residual Risks" section listing what attacks are now mitigated, what assumptions the security depends on, and any known remaining limitations, so it can be independently reviewed for further loopholes.
+```
