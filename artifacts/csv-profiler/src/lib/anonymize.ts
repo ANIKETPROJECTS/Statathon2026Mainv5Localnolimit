@@ -33,6 +33,32 @@ function makeKeystream(seed: number) {
   };
 }
 
+// Two-seed variant: accepts independent 32-bit values for the two internal PRNG
+// state variables so that more than 32 bits of external material (e.g. the full
+// 128-bit export salt) can be reflected in the initial PRNG state.
+function makeKeystream2(seedA: number, seedB: number) {
+  let a = (seedA >>> 0) || 1;
+  let b = (seedB >>> 0) || 2;
+  return () => {
+    a ^= a << 13; a = a >>> 0;
+    a ^= a >> 17;
+    a ^= a << 5;  a = a >>> 0;
+    b ^= b >> 7;  b = b >>> 0;
+    b ^= b << 9;  b = b >>> 0;
+    b ^= b >> 8;  b = b >>> 0;
+    return (((a + b) >>> 0) / 0x100000000);
+  };
+}
+
+// ── 8-bit left-rotate ─────────────────────────────────────────────────────────
+// Used to spread CBC diffusion across all 5 keystream bytes (Issue A fix):
+// byte j receives cbc rotated left by j positions so each sub-operation is
+// independently influenced by the chaining state.
+function rotl8(x: number, n: number): number {
+  n = n & 7; // clamp to 0–7 (only 3 bits matter for an 8-bit rotate)
+  return n === 0 ? (x & 0xff) : (((x << n) | (x >>> (8 - n))) & 0xff);
+}
+
 // ── §6 — CSPRNG helpers (Issue 6: weak randomness) ───────────────────────────
 // All nonce, salt and random-seed generation uses the browser's CSPRNG.
 function cryptoRandomU32(): number {
@@ -131,15 +157,28 @@ function makeCellKsBytes(size: number, keyHex: string, ivSeed: number): Uint8Arr
   return ksBytes;
 }
 
-// ── §12-v2 — Per-cell keystream bytes with export-salt mixing (Issue 4) ──────
-// exportSaltWord: first 32 bits of the 128-bit export salt, XORed into the IV.
-// This ensures that the same plaintext encrypted in two different export runs
-// (different exportSalt values) produces different ciphertext.
+// ── §12-v2 — Per-cell keystream bytes with full 128-bit export-salt mixing (Issues B & 4)
+// Folds all 128 bits of exportSalt into the two independent 32-bit PRNG seeds (seedA,
+// seedB) so that the effective freshness protection is bounded by the full 128-bit salt
+// space, not the first 32 bits. Birthday bound for a collision in (seedA, seedB) is ~2^32
+// independent exports (64-bit PRNG state), which is orders of magnitude better than the
+// ~2^16 bound from a single 32-bit seed.
 function makeCellKsBytesV2(
-  size: number, keyHex: string, ivSeed: number, exportSaltWord = 0
+  size: number, keyHex: string, ivSeed: number, exportSalt = ""
 ): Uint8Array {
-  const combined = (parseInt(keyHex.slice(0, 8), 16) ^ ivSeed ^ exportSaltWord) >>> 0;
-  const ksRng = makeKeystream(combined);
+  // seedA carries key prefix XOR ivSeed XOR salt words 0 & 1
+  let seedA = (parseInt(keyHex.slice(0, 8), 16) ^ ivSeed) >>> 0;
+  // seedB carries key word 1 XOR salt words 2 & 3 (independent from seedA)
+  let seedB = parseInt(keyHex.slice(8, 16) || "0", 16) >>> 0;
+  // Fold all four 32-bit words of the 128-bit export salt into the two seeds
+  for (let i = 0; i < 32; i += 8) {
+    if (exportSalt.length >= i + 8) {
+      const sw = parseInt(exportSalt.slice(i, i + 8), 16);
+      if (i < 16) seedA = (seedA ^ sw) >>> 0;
+      else         seedB = (seedB ^ sw) >>> 0;
+    }
+  }
+  const ksRng = makeKeystream2(seedA, seedB);
   const ksBytes = new Uint8Array(size);
   for (let i = 0; i < size; i++)
     ksBytes[i] = Math.floor(ksRng() * 256);
@@ -280,25 +319,32 @@ function decryptFPECell(ksBytes: Uint8Array, value: string): string {
   }).join("");
 }
 
-// ── §10-v2 — CBC-enhanced cell encryption (Issue 3: no inter-character diffusion)
+// ── §10-v2 — CBC-enhanced cell encryption (v3 corrections applied)
 //
-// Adds CBC-style chaining between characters within a single FPE round:
-//   • cbc starts at 0 for every cell/round call.
-//   • For character at index i, the FIRST of the five keystream bytes is XORed with
-//     (cbc & 0xff) before being fed to applyOpFwd. This means character i's encryption
-//     depends on the ciphertexts of all characters 0…i-1, not just its own keystream.
-//   • After encrypting character i → outputChar, update: cbc = ((cbc << 3) ^ outputCode) & 0xff
-//     where outputCode = encrypted char's code. CBC feedback is derived from ciphertext.
+// CBC-style chaining between characters — corrected per adversarial review:
 //
-// Decryption (decryptFPECellV2):
-//   • Identical cbc derivation using the INPUT character code (which IS the ciphertext).
-//     Since we process left-to-right and cbc_i derives from ciphertext chars 0…i-1,
-//     decryption can reproduce the exact same cbc at each position without knowing plaintext.
+//   (A-fix) rotl8 diffusion: cbc is spread across ALL 5 keystream bytes for each
+//       character (byte j gets cbc rotated left by j bits), not only byte 0.
+//       This means all 5 sub-operations per character are influenced by the chain.
+//
+//   (A-fix) Secret in cbc feedback: the cbc update mixes in rawKs4, the raw
+//       (pre-effective) 5th keystream byte for this character position.  rawKs4 is
+//       derived from the secret key, so an attacker who reads the ciphertext cannot
+//       reconstruct cbc without also knowing the key.  The previous update used only
+//       the ciphertext character code, which is public.
+//
+//   cbc ← ((cbc << 3) ⊕ charCode(encChar) ⊕ rawKs4) & 0xFF
+//
+// Decryption symmetry:
+//   The decryptor knows ksBytes (same key), so it can compute rawKs4 identically at
+//   each position.  It processes ciphertext left-to-right; the cbc value at position i
+//   depends on ciphertext codes 0…i-1 and ks bytes 4, 9, 14, … (every 5th raw byte).
+//   All of those are available during decryption without needing plaintext.
 //
 // Format preservation:
-//   XORing into a keystream byte changes which operation and amount are applied, but
-//   the operation set and alphabet remain identical — so the output character still
-//   belongs to the same class and alphabet. Format-preservation is maintained.
+//   XORing rotl8(cbc,j) into a keystream byte changes which operation and shift amount
+//   are selected but never changes which alphabet is used.  The output character remains
+//   in the same class (digit, uppercase, lowercase, symbol) as the input.
 
 function encryptFPECellV2(ksBytes: Uint8Array, value: string): string {
   const chars = [...value];
@@ -310,12 +356,14 @@ function encryptFPECellV2(ksBytes: Uint8Array, value: string): string {
     const ch = chars[charIdx];
     const code = ch.charCodeAt(0);
 
-    // Apply CBC feedback to the first of the 5 keystream bytes for this character.
-    // Bytes 1–4 are used unchanged; only byte 0 carries the diffusion.
+    // Capture raw 5th ks byte BEFORE any effective-ks computation.
+    // This is the secret component mixed into the cbc update (Issue A fix).
+    const rawKs4 = ksBytes[(ki + 4) % ksBytes.length];
+
+    // Spread CBC diffusion across all 5 ks bytes via bit-rotation of cbc.
+    // byte j receives cbc rotated left by j positions (Issue A fix — was only byte 0).
     const getKs = (off: number): number =>
-      off === 0
-        ? ((ksBytes[(ki + off) % ksBytes.length] ^ (cbc & 0xff)) & 0xff)
-        : ksBytes[(ki + off) % ksBytes.length];
+      (ksBytes[(ki + off) % ksBytes.length] ^ rotl8(cbc, off)) & 0xff;
 
     let outputChar: string;
 
@@ -323,7 +371,7 @@ function encryptFPECellV2(ksBytes: Uint8Array, value: string): string {
     if (charIdx === 0 && code >= 48 && code <= 57) {
       if (code === 48) {
         ki += 5;
-        cbc = (((cbc << 3) ^ 48) & 0xff);
+        cbc = (((cbc << 3) ^ 48 ^ rawKs4) & 0xff);
         out.push(ch);
         continue;
       }
@@ -333,7 +381,7 @@ function encryptFPECellV2(ksBytes: Uint8Array, value: string): string {
       for (let i = 0; i < 5; i++) v = applyOpFwd(v, getKs(i), size, muls);
       outputChar = String.fromCharCode(v + base);
       ki += 5;
-      cbc = (((cbc << 3) ^ outputChar.charCodeAt(0)) & 0xff);
+      cbc = (((cbc << 3) ^ outputChar.charCodeAt(0) ^ rawKs4) & 0xff);
       out.push(outputChar);
       continue;
     }
@@ -361,24 +409,26 @@ function encryptFPECellV2(ksBytes: Uint8Array, value: string): string {
         for (let i = 0; i < 5; i++) v = applyOpFwd(v, getKs(i), symSize, symMuls);
         outputChar = SYMBOL_CHARS[v];
       } else {
-        // Non-printable passthrough — advance ki, update cbc with original code
+        // Non-printable passthrough — advance ki, update cbc
         ki += 5;
-        cbc = (((cbc << 3) ^ code) & 0xff);
+        cbc = (((cbc << 3) ^ code ^ rawKs4) & 0xff);
         out.push(ch);
         continue;
       }
     }
 
     ki += 5;
-    cbc = (((cbc << 3) ^ outputChar.charCodeAt(0)) & 0xff);
+    cbc = (((cbc << 3) ^ outputChar.charCodeAt(0) ^ rawKs4) & 0xff);
     out.push(outputChar);
   }
 
   return out.join("");
 }
 
-// Inverse of encryptFPECellV2.  CBC update uses the INPUT character code (ciphertext),
-// which is the same value the encryptor used to derive cbc after encrypting that position.
+// Inverse of encryptFPECellV2.
+// CBC update uses the INPUT character code (ciphertext) and the same rawKs4 secret
+// byte — the decryptor knows ksBytes from the key, so rawKs4 is reproducible at
+// each position without knowing the plaintext.
 function decryptFPECellV2(ksBytes: Uint8Array, value: string): string {
   const chars = [...value];
   let ki = 0;
@@ -389,11 +439,12 @@ function decryptFPECellV2(ksBytes: Uint8Array, value: string): string {
     const ch = chars[charIdx]; // ciphertext character
     const code = ch.charCodeAt(0);
 
-    // Same CBC-injected getKs as encryption — reproduces identical effective ks bytes
+    // Same rawKs4 capture as encryption (same ksBytes, same ki at this point)
+    const rawKs4 = ksBytes[(ki + 4) % ksBytes.length];
+
+    // Same rotl8-injected getKs as encryption — reproduces identical effective ks bytes
     const getKs = (off: number): number =>
-      off === 0
-        ? ((ksBytes[(ki + off) % ksBytes.length] ^ (cbc & 0xff)) & 0xff)
-        : ksBytes[(ki + off) % ksBytes.length];
+      (ksBytes[(ki + off) % ksBytes.length] ^ rotl8(cbc, off)) & 0xff;
 
     let outputChar: string;
 
@@ -401,7 +452,7 @@ function decryptFPECellV2(ksBytes: Uint8Array, value: string): string {
     if (charIdx === 0 && code >= 48 && code <= 57) {
       if (code === 48) {
         ki += 5;
-        cbc = (((cbc << 3) ^ 48) & 0xff);
+        cbc = (((cbc << 3) ^ 48 ^ rawKs4) & 0xff);
         out.push(ch);
         continue;
       }
@@ -412,7 +463,7 @@ function decryptFPECellV2(ksBytes: Uint8Array, value: string): string {
       for (let i = 4; i >= 0; i--) v = applyOpInv(v, ks5[i], size, muls);
       outputChar = String.fromCharCode(v + base);
       ki += 5;
-      cbc = (((cbc << 3) ^ code) & 0xff); // ciphertext code (input)
+      cbc = (((cbc << 3) ^ code ^ rawKs4) & 0xff); // ciphertext code (input)
       out.push(outputChar);
       continue;
     }
@@ -445,14 +496,14 @@ function decryptFPECellV2(ksBytes: Uint8Array, value: string): string {
         outputChar = SYMBOL_CHARS[v];
       } else {
         ki += 5;
-        cbc = (((cbc << 3) ^ code) & 0xff);
+        cbc = (((cbc << 3) ^ code ^ rawKs4) & 0xff);
         out.push(ch);
         continue;
       }
     }
 
     ki += 5;
-    cbc = (((cbc << 3) ^ code) & 0xff); // CBC uses ciphertext code (the INPUT, same as what encrypt output)
+    cbc = (((cbc << 3) ^ code ^ rawKs4) & 0xff); // CBC uses ciphertext code (the INPUT)
     out.push(outputChar);
   }
 
@@ -495,14 +546,18 @@ function deriveAlnumKey(keyChain: string[]): string {
   return generateRandomKey(h);
 }
 
-// v2: also mixes in export salt so alnum mapping differs per export run
+// v2: also mixes in export salt (all 128 bits) so alnum mapping differs per export run
 function deriveAlnumKeyV2(keyChain: string[], exportSalt: string): string {
   let h = 0xA1B2C3D4;
   for (const k of keyChain) {
     h = (Math.imul(h, 0x9e3779b9) ^ parseInt(k.slice(0, 8), 16)) >>> 0;
   }
-  if (exportSalt.length >= 8) {
-    h = (h ^ parseInt(exportSalt.slice(0, 8), 16)) >>> 0;
+  // Fold all four 32-bit words of the 128-bit export salt (Issue B fix)
+  for (let si = 0; si < 32; si += 8) {
+    if (exportSalt.length >= si + 8) {
+      h = (Math.imul(h ^ parseInt(exportSalt.slice(si, si + 8), 16), 0x9e3779b9)) >>> 0;
+      h = (h ^ (h >>> 16)) >>> 0;
+    }
   }
   h = (h ^ 0x5A5A5A5A) >>> 0;
   return generateRandomKey(h);
@@ -567,6 +622,21 @@ async function verifyExportHMAC(
   for (let i = 0; i < computed.length; i++)
     diff |= computed.charCodeAt(i) ^ expectedHex.charCodeAt(i);
   return diff === 0;
+}
+
+// ── §8.C — Key fingerprint (Issue C fix) ─────────────────────────────────────
+// Produces a non-invertible identifier via SHA-256 with a fixed domain separator.
+// The fingerprint is 16 hex chars (64 bits of hash output); zero key bits appear.
+// Previous implementation exposed 32 bits of the actual round key (first 8 hex chars),
+// which is real key material.
+async function computeKeyFingerprint(keyChain: string[]): Promise<string> {
+  const enc = new TextEncoder();
+  const material = enc.encode("AIRAVATA-FINGERPRINT-v3\x00" + keyChain.join(""));
+  const digest = await crypto.subtle.digest("SHA-256", material);
+  return Array.from(new Uint8Array(digest))
+    .map(b => b.toString(16).padStart(2, "0"))
+    .join("")
+    .slice(0, 16); // 64-bit prefix — sufficient for identity confirmation; SHA-256 is one-way
 }
 
 // ── §8.3-v2 — Format comment parsing ─────────────────────────────────────────
@@ -671,8 +741,9 @@ export interface AnonymizeAuditLog {
   formatVersion: string;
   /** "random" | "pbkdf2" | "hex" */
   keyMode: string;
-  /** First 8 hex characters of the first round key — enough to confirm the same key,
-   *  too short to reconstruct it. Does NOT contain the full key. */
+  /** SHA-256(keyChain || domain-separator) truncated to 16 hex chars.
+   *  Derived via one-way hash — zero actual key bits are exposed.
+   *  Suitable for confirming key identity across logs without leaking material. */
   keyFingerprint: string;
   /** The 128-bit export salt (32 hex chars). Required for decryption; safe to store
    *  alongside the file since it does not reveal key material. */
@@ -782,11 +853,14 @@ export async function resolveKeyChainAsync(options: AnonymizeOptions): Promise<s
     rolling = (Math.imul(rolling, 0x85ebca6b)) >>> 0;
     rolling = (rolling ^ (rolling >>> 13)) >>> 0;
   }
-  if (exportSalt.length >= 8) {
-    const saltWord = parseInt(exportSalt.slice(0, 8), 16);
-    rolling = (rolling ^ saltWord) >>> 0;
-    rolling = (Math.imul(rolling, 0x9e3779b9)) >>> 0;
-    rolling = (rolling ^ (rolling >>> 16)) >>> 0;
+  // Mix all 128 bits of the export salt into the rolling seed (Issue B fix:
+  // was only first 32 bits, giving a ~2^16 birthday bound; now all 4 words are folded in)
+  for (let si = 0; si < 32; si += 8) {
+    if (exportSalt.length >= si + 8) {
+      rolling = (rolling ^ parseInt(exportSalt.slice(si, si + 8), 16)) >>> 0;
+      rolling = (Math.imul(rolling, 0x9e3779b9)) >>> 0;
+      rolling = (rolling ^ (rolling >>> 16)) >>> 0;
+    }
   }
   const masterKey = generateRandomKey(rolling);
   let rollingK = (parseInt(masterKey.slice(0, 8), 16) ^ 0xdeadbeef) >>> 0;
@@ -823,20 +897,18 @@ export async function encryptFWFToBlob(
   // ── Issue 1: use async key chain for proper PBKDF2 ────────────────────────
   const keyChain = await resolveKeyChainAsync(optionsWithSalt);
 
-  const exportSaltWord = parseInt(exportSalt.slice(0, 8), 16);
-
   const keyHex = options.keyMode === "hex"
     ? (options.keyHex ?? "").toLowerCase().trim()
     : keyChain[0];
 
-  // Derive alphanumeric-step key (mixes in export salt for cross-run uniqueness)
+  // Derive alphanumeric-step key (mixes in all 128 bits of export salt)
   const alnumKey = options.alphanumericOutput ? deriveAlnumKeyV2(keyChain, exportSalt) : "";
   const colAlnumKs: Record<string, Uint8Array> = {};
   if (options.alphanumericOutput) {
     for (const f of fields) {
       if (encCols.has(f.varName))
         colAlnumKs[f.varName] = makeCellKsBytesV2(
-          DET_KS_SIZE, alnumKey, hashColIV(alnumKey, f.varName), exportSaltWord
+          DET_KS_SIZE, alnumKey, hashColIV(alnumKey, f.varName), exportSalt
         );
     }
   }
@@ -887,7 +959,7 @@ export async function encryptFWFToBlob(
                 makeCellKsBytesV2(
                   ksSize(val.length), kh,
                   hashValueNonce(hashColIV(kh, f.varName), val),
-                  exportSaltWord
+                  exportSalt
                 )
               );
               // ── Issue 3 fix: CBC diffusion ────────────────────────────────
@@ -905,7 +977,7 @@ export async function encryptFWFToBlob(
               makeCellKsBytesV2(
                 ksSize(val.length), kh,
                 (ivCounter ^ columnSeed ^ (ri * 0x12345679)) >>> 0,
-                exportSaltWord
+                exportSalt
               )
             );
             // ── Issue 3 fix: CBC diffusion ────────────────────────────────
@@ -932,12 +1004,13 @@ export async function encryptFWFToBlob(
 
   onProgress(100);
 
-  // ── Issue 8: audit log ────────────────────────────────────────────────────
+  // ── Issue 8: audit log (Issue C fix: fingerprint is a SHA-256 hash, not raw key bits)
+  const keyFingerprint = await computeKeyFingerprint(keyChain);
   const auditLog: AnonymizeAuditLog = {
     timestamp: new Date().toISOString(),
     formatVersion: FORMAT_VERSION,
     keyMode: options.keyMode,
-    keyFingerprint: keyHex.slice(0, 8),
+    keyFingerprint,
     exportSalt,
     columnsProcessed: [...encCols],
     cbcEnabled: true,
@@ -971,7 +1044,6 @@ export async function decryptCSVToBlob(
     const exportSalt = meta.exportSalt ?? options.exportSalt ?? "";
     const optionsV2: AnonymizeOptions = { ...options, exportSalt };
     const keyChain = await resolveKeyChainAsync(optionsV2);
-    const exportSaltWord = parseInt(exportSalt.slice(0, 8), 16);
 
     // ── Issue 7: verify HMAC before decrypting ────────────────────────────
     if (meta.hmacHex && meta.hmacLineIndex >= 0) {
@@ -1031,7 +1103,7 @@ export async function decryptCSVToBlob(
                   makeCellKsBytesV2(
                     ksSize(val.length), kh,
                     hashValueNonce(hashColIV(kh, col), val),
-                    exportSaltWord
+                    exportSalt
                   )
                 );
                 const dec = decryptChain4V2(ksArr, val);
@@ -1046,7 +1118,7 @@ export async function decryptCSVToBlob(
                 makeCellKsBytesV2(
                   ksSize(val.length), kh,
                   (ivCounter ^ columnSeed ^ (ri * 0x12345679)) >>> 0,
-                  exportSaltWord
+                  exportSalt
                 )
               );
               val = decryptChain4V2(ksArr, val);

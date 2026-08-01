@@ -1,0 +1,24 @@
+Fix the following three specific inaccuracies in the v2 hardening of AIRAVATA DEA, where the implementation does not actually deliver the security property that newfile.md claims it does. Then correct the documentation to match the real, verified behavior.
+
+ISSUE A — CBC "diffusion" chains on ciphertext, which is public, not on any secret
+The current chaining update is:
+  cbc ← ((cbc << 3) ⊕ charCode(encChar)) & 0xFF
+Because encChar is the ciphertext character (visible in the output file), cbc is trivially computable by anyone reading the ciphertext left to right — no secret or "recovery" of prior positions is required. The threat-model claim "attacking position i requires recovering positions 0…i−1 first" is false and must be corrected or the mechanism strengthened.
+Fix: Either (a) rework the chaining so the feedback value depends on secret keystream material in addition to ciphertext, so an attacker cannot reconstruct cbc from ciphertext alone, or (b) if the design is kept as-is, rewrite the threat-model claim to accurately state what protection this chaining actually provides (breaks column-wide stationarity of the substitution, not sequential-recovery difficulty). Also address that only 1 of 5 keystream bytes (effectiveKs[0]) receives any chaining feedback — extend diffusion to cover more of the 5 sub-operations per character, or explicitly document this as a partial mitigation.
+
+ISSUE B — Export salt mixed into the cell keystream is truncated to 32 bits, not 128
+combined[r] uses exportSaltWord, defined as "first 32 bits of the 128-bit salt." This means the actual freshness protecting the per-cell keystream against cross-export collision is bounded by a 32-bit space (~2^16 birthday bound), not the 128-bit / ~2^64 bound claimed in the residual-risk table.
+Fix: Mix the full 128-bit export salt into the per-cell keystream derivation (e.g. fold all 128 bits into combined[r] via a proper mixing function, not just the first 32 bits), so the collision-resistance claim in the documentation is actually true. Update the "Correct nonce uniqueness" assumption in the threat model to reflect the real bound after the fix.
+
+ISSUE C — Audit log fingerprint leaks real key material despite claiming otherwise
+keyFingerprint is documented as "confirms key identity without revealing usable key material," but it stores the first 8 hex chars (32 bits) of the actual key, which is real key material, not a non-reversible identifier.
+Fix: Replace keyFingerprint with a proper non-invertible identifier — e.g. SHA-256(keyChain || fixed domain separator), truncated for display, so no actual key bits ever appear in the log. Update the documentation to accurately describe what the fingerprint is now derived from and confirm zero key bits are exposed.
+
+ADDITIONAL REQUIREMENT
+Re-run the same adversarial self-review process used in newfile.md against the three fixed mechanisms specifically (chaining, salt mixing, fingerprinting) and report, for each, whether the original claimed protection now actually holds, with reasoning — not just a restated claim.
+
+DELIVERABLE
+Update newfile.md in place (do not create a new file) to reflect:
+- The corrected implementation details for Issues A, B, and C
+- Corrected entries in the "What is NOW MITIGATED" table so the stated protection matches actual behavior
+- A short "v3 Corrections" section at the top of the document summarizing what was inaccurate in v2 and what changed, so the audit trail of the security review itself is preserved.

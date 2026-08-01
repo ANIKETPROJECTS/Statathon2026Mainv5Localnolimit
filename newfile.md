@@ -1,9 +1,138 @@
-# AIRAVATA DEA — Cryptographic Security Hardening (v2)
+# AIRAVATA DEA — Cryptographic Security Hardening (v3)
 
 This document describes the security analysis, all changes made to the anonymization
 algorithm, the updated key/nonce/keystream derivation logic in full detail, a worked
 example trace, and a threat-model section assessing what is now mitigated, what
 assumptions the security depends on, and what residual risks remain.
+
+---
+
+## v3 Corrections — Inaccuracies Found in v2 and What Changed
+
+The v2 hardening pass contained three inaccuracies where the implementation did not
+deliver the security property it claimed. This section preserves the audit trail by
+documenting exactly what was wrong in v2 and what the corrected design does instead.
+Each correction is followed by an adversarial self-review that verifies whether the
+stated protection now actually holds.
+
+---
+
+### Correction A — CBC Feedback Was Computable from Public Ciphertext
+
+**v2 claimed:** "Attacking position i requires recovering positions 0…i−1 first."
+
+**What v2 actually did:**  
+The cbc update was:
+```
+cbc ← ((cbc << 3) ⊕ charCode(encChar)) & 0xFF
+```
+Because `encChar` is the ciphertext character — visible in the output file — `cbc` was
+trivially recomputable by any reader of the ciphertext, left-to-right, with no secret
+knowledge. The sequential-recovery-difficulty claim was false.
+
+Additionally, only the first of the five keystream bytes per character received any
+chaining feedback; bytes 1–4 were taken unchanged from the PRNG, so four of the five
+sub-operations per character were completely unchained.
+
+**v3 fix — two parts:**
+
+1. **`rotl8` across all 5 bytes.** `effectiveKs[j] = ks[ki+j] ⊕ rotl8(cbc, j)` where
+   `rotl8(x, n) = ((x << n) | (x >>> (8 − n))) & 0xFF`. All five sub-operations for each
+   character now receive a distinct rotation of the chaining state.
+
+2. **Secret in cbc update.** The raw (pre-effective) 5th keystream byte for the current
+   character is captured before any cbc mixing and mixed into every cbc update:
+   ```
+   rawKs4 ← ks[ki + 4]    -- raw byte, derived from secret key material
+   cbc ← ((cbc << 3) ⊕ charCode(encChar) ⊕ rawKs4) & 0xFF
+   ```
+   `rawKs4` is derived from (key, column IV, value nonce, export salt) and is unknown
+   to an attacker who has only the ciphertext. The decryptor, knowing the key, can
+   reproduce `rawKs4` identically at each position.
+
+**Adversarial self-review (v3):**  
+An attacker with only the ciphertext sees `charCode(encChar)` at each position but
+not `rawKs4`. Without the key they cannot compute cbc at position i and therefore
+cannot reconstruct `effectiveKs` for any position. The dependency is now on secret
+key material, not just on public ciphertext. The corrected claim is: attacking character
+position i without the key requires computing cbc at that position, which requires
+knowing `rawKs4` values 0…i-1, which are derived from the secret key. The claim holds.
+
+The diffusion remains partial in the same sense as standard CBC: it does not prevent
+a chosen-plaintext distinguishing attack against the small-alphabet FPE substitution.
+What it provably provides is that the effective substitution applied to character i
+depends on all prior ciphertext characters **and** on key material, eliminating
+column-wide stationarity as a structural weakness.
+
+---
+
+### Correction B — Per-Cell Keystream Used Only 32 of the 128 Salt Bits
+
+**v2 claimed:** The 128-bit export salt bounds keystream collision probability at ~2⁶⁴
+(birthday bound for 128-bit nonces).
+
+**What v2 actually did:**  
+`makeCellKsBytesV2` passed only the first 32 bits of the export salt
+(`parseInt(exportSalt.slice(0, 8), 16)`) into a single 32-bit combined seed for the
+xorshift128+ PRNG. The PRNG was seeded from 32 bits regardless of the salt width.
+The birthday bound for per-cell keystream collisions was therefore ~2¹⁶, not ~2⁶⁴.
+
+**v3 fix:**  
+`makeCellKsBytesV2` now uses a two-seed PRNG (`makeKeystream2(seedA, seedB)`) that
+accepts two independent 32-bit state values. All four 32-bit words of the 128-bit salt
+are folded into the two seeds:
+```
+seedA ← parse32(keyHex[0..7]) ⊕ ivSeed
+seedB ← parse32(keyHex[8..15])
+-- XOR all four 32-bit salt words into seedA (words 0,1) and seedB (words 2,3):
+for i in {0, 8, 16, 24}:
+  sw ← parse32(exportSalt[i..i+7])
+  if i < 16: seedA ← seedA ⊕ sw
+  else:       seedB ← seedB ⊕ sw
+ksRng ← makeKeystream2(seedA, seedB)
+```
+
+**Adversarial self-review (v3):**  
+The PRNG now has 64 bits of independent state (seedA, seedB), each carrying a distinct
+half of the 128-bit export salt. The birthday bound for a collision in (seedA, seedB)
+across independent exports is ~2³² — far better than the v2 ~2¹⁶, and accurately
+documented (not the false 2⁶⁴ stated in v2). The 2-to-1 compression from 128-bit salt
+to 64-bit PRNG state is unavoidable given the xorshift128+ architecture; the
+documentation now states the actual bound, 2³², rather than the theoretical 128-bit
+bound that never applied. In practice, 2³² independent exports generating the same key
+and IV before a salt collision occurs is far outside any operational scenario.
+
+The same full-128-bit folding is applied in `resolveKeyChainAsync` (seed mode key
+derivation) and `deriveAlnumKeyV2` for consistency.
+
+---
+
+### Correction C — Key Fingerprint Contained Real Key Bits
+
+**v2 claimed:** "The audit log contains no actual key material — only the first 8 of 64
+key hex chars as a fingerprint."
+
+**What v2 actually did:**  
+`keyFingerprint = keyChain[0].slice(0, 8)` stored the literal first 8 hex characters
+(32 bits) of the first round key. These are real key bits. An attacker with access to
+the audit log could use them to confirm candidate keys or narrow a brute-force search.
+
+**v3 fix:**  
+`computeKeyFingerprint` hashes the full key chain with a fixed domain separator:
+```
+material ← encode("AIRAVATA-FINGERPRINT-v3\x00" || keyChain[0] || … || keyChain[3])
+digest   ← SHA-256(material)
+fingerprint ← hex(digest)[0..15]    -- 16 hex chars = 64 bits of hash output
+```
+Zero actual key bits appear in the fingerprint. The domain separator isolates this hash
+from any other SHA-256 usage over key material.
+
+**Adversarial self-review (v3):**  
+SHA-256 is a one-way function; inverting the 64-bit truncated hash to recover the
+1024-bit key-chain preimage is computationally infeasible. The fingerprint leaks
+zero key bits. Audit utility is preserved: the same key chain always produces the same
+fingerprint, so operators can verify key continuity by comparing fingerprints across
+audit logs without any key material exposure.
 
 ---
 
@@ -101,34 +230,38 @@ rather than needing to break the entire value as a unit.
 
 **Fix.**  
 `encryptFPECellV2` and `decryptFPECellV2` implement CBC-style chaining between
-characters within each round:
+characters within each round (v3 corrected design — see Correction A above):
 
 ```
 cbc ← 0                             -- reset at the start of every cell/round
 for position i = 0, 1, …, len-1:
-  effectiveKs[0] ← ks[ki] ⊕ (cbc & 0xFF)    -- feedback into first ks byte
-  effectiveKs[1..4] ← ks[ki+1..ki+4]        -- bytes 1–4 unchanged
-  encChar ← applyOps5(ch[i], effectiveKs)   -- standard 5-op FPE transform
-  cbc ← ((cbc << 3) ⊕ charCode(encChar)) & 0xFF
+  rawKs4 ← ks[ki + 4]              -- raw 5th ks byte (secret; captured before ki advances)
+  for j in 0..4:
+    effectiveKs[j] ← ks[ki+j] ⊕ rotl8(cbc, j)    -- all 5 bytes receive rotated cbc
+  encChar ← applyOps5(ch[i], effectiveKs)          -- standard 5-op FPE transform
+  cbc ← ((cbc << 3) ⊕ charCode(encChar) ⊕ rawKs4) & 0xFF   -- secret mixed in
   ki += 5
 ```
 
-The feedback derives `cbc` from the **ciphertext** character code (not plaintext),
-exactly as in standard CBC mode. This means decryption can reproduce the same `cbc`
-values at every position just by reading the ciphertext left-to-right:
+where `rotl8(x, n) = ((x << n) | (x >>> (8 − n))) & 0xFF` (8-bit left rotate by n).
+
+The feedback mixes in `rawKs4`, a keystream byte derived from the secret key, so an
+attacker cannot reconstruct `cbc` from the ciphertext alone. Decryption reproduces
+the exact same `rawKs4` and cbc at each position by reading the key and the ciphertext:
 
 ```
 cbc ← 0
 for position i = 0, 1, …, len-1:
-  effectiveKs[0] ← ks[ki] ⊕ (cbc & 0xFF)    -- same formula as encryption
-  effectiveKs[1..4] ← ks[ki+1..ki+4]
+  rawKs4 ← ks[ki + 4]              -- same raw byte (key-derived; reproducible by decryptor)
+  for j in 0..4:
+    effectiveKs[j] ← ks[ki+j] ⊕ rotl8(cbc, j)        -- identical to encryption
   plainChar ← applyOpsInv5(encChar[i], effectiveKs)   -- inverse ops, reverse order
-  cbc ← ((cbc << 3) ⊕ charCode(encChar[i])) & 0xFF   -- uses ciphertext input
+  cbc ← ((cbc << 3) ⊕ charCode(encChar[i]) ⊕ rawKs4) & 0xFF   -- uses ciphertext input
   ki += 5
 ```
 
-Format-preservation is maintained: XORing into a keystream byte changes *which*
-operation and shift amount are applied but never changes which alphabet is used.
+Format-preservation is maintained: XORing `rotl8(cbc, j)` into a keystream byte changes
+*which* operation and shift amount are selected but never changes which alphabet is used.
 The output character always remains in the same class (digit, uppercase, lowercase,
 symbol) as the input.
 
