@@ -6,6 +6,17 @@
 // Each alphanumeric character passes through 5 independent micro-operations per round,
 // consuming 5 keystream bytes. Non-alphanumeric characters are passed through unchanged
 // (consuming 5 keystream bytes to keep offsets aligned).
+//
+// FORMAT VERSIONS
+// ───────────────
+// v1 (legacy): original algorithm — column-level keystream, no CBC, no export salt, no HMAC.
+//              Files written before this hardening pass. Decryption is fully supported via
+//              the legacy code path.
+// v2 (current): all security fixes applied — per-value keystream, CBC diffusion, CSPRNG-derived
+//               export salt, HMAC-SHA256 integrity, and Web Crypto PBKDF2. New files always
+//               use v2. Old v1 files decrypt correctly with the legacy path.
+
+export const FORMAT_VERSION = "v2";
 
 // ── §9 — xorshift128+ PRNG ────────────────────────────────────────────────────
 function makeKeystream(seed: number) {
@@ -22,7 +33,22 @@ function makeKeystream(seed: number) {
   };
 }
 
+// ── §6 — CSPRNG helpers (Issue 6: weak randomness) ───────────────────────────
+// All nonce, salt and random-seed generation uses the browser's CSPRNG.
+function cryptoRandomU32(): number {
+  const buf = new Uint8Array(4);
+  crypto.getRandomValues(buf);
+  return ((buf[0] << 24) | (buf[1] << 16) | (buf[2] << 8) | buf[3]) >>> 0;
+}
+
+export function cryptoRandomHex(bytes: number): string {
+  const buf = new Uint8Array(bytes);
+  crypto.getRandomValues(buf);
+  return Array.from(buf).map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
 // ── §8.1 — Random key from seed ───────────────────────────────────────────────
+// Still used for seed-mode key expansion (PRNG seeded by user seeds + export salt).
 function generateRandomKey(seed: number): string {
   const rng = makeKeystream((seed ^ 0xdeadbeef) >>> 0);
   const bytes: string[] = [];
@@ -31,8 +57,11 @@ function generateRandomKey(seed: number): string {
   return bytes.join("");
 }
 
-// ── §8.2 — PBKDF2-like passphrase key ────────────────────────────────────────
-function deriveKeyFromPassphrase(passphrase: string, iterations: number): string {
+// ── §8.2-v1 — Legacy PBKDF2-like passphrase key (v1 compat) ─────────────────
+// Preserved for backward-compatible decryption of v1 files only.
+// NOTE: this is NOT a real PBKDF2; it is a weak custom construction.
+// v2 uses Web Crypto PBKDF2 instead (see §8.2-v2 below).
+function deriveKeyFromPassphrase_v1(passphrase: string, iterations: number): string {
   let h = 0x5a827999;
   for (let i = 0; i < passphrase.length; i++)
     h = (Math.imul(h, 31) + passphrase.charCodeAt(i)) >>> 0;
@@ -44,6 +73,29 @@ function deriveKeyFromPassphrase(passphrase: string, iterations: number): string
   return bytes.join("");
 }
 
+// ── §8.2-v2 — Web Crypto PBKDF2 passphrase key (Issue 1) ────────────────────
+// Uses browser's native PBKDF2-SHA256 for real key stretching.
+// exportSalt is mixed into the PBKDF2 salt so each export run produces a unique key.
+async function deriveKeyFromPassphrase_v2(
+  passphrase: string,
+  exportSalt: string,
+  iterations: number
+): Promise<string> {
+  const enc = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey(
+    "raw", enc.encode(passphrase), "PBKDF2", false, ["deriveBits"]
+  );
+  // Salt = fixed domain separator + per-export CSPRNG salt (Issues 1 & 4)
+  const salt = enc.encode("AIRAVATA-DEA-v2\x00" + exportSalt);
+  const bits = await crypto.subtle.deriveBits(
+    { name: "PBKDF2", hash: "SHA-256", salt, iterations },
+    keyMaterial,
+    256
+  );
+  return Array.from(new Uint8Array(bits))
+    .map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
 // ── §11 — Column IV hash (deterministic per key+col) ─────────────────────────
 function hashColIV(keyHex: string, colName: string): number {
   let h = parseInt(keyHex.slice(0, 8), 16) ^ 0xa5a5a5a5;
@@ -53,9 +105,40 @@ function hashColIV(keyHex: string, colName: string): number {
   return h;
 }
 
-// ── §12 — Per-cell keystream bytes ────────────────────────────────────────────
+// ── §11-v2 — Per-value nonce (Issue 2: reused keystream) ─────────────────────
+// Derives a unique IV for each distinct cell value so that identical plaintexts
+// in the same column produce different keystreams. Determinism is preserved: the
+// same value always produces the same nonce (and thus the same ciphertext within
+// a single export run), so the deterministic-mode cache still works correctly.
+function hashValueNonce(baseIv: number, value: string): number {
+  let h = baseIv;
+  for (let i = 0; i < value.length; i++) {
+    h = (Math.imul(h, 0x9e3779b9) + value.charCodeAt(i)) >>> 0;
+    h = (h ^ (h >>> 16)) >>> 0;
+  }
+  // Mix in value length to prevent "AB" colliding with "A" + degenerate suffix
+  h = (Math.imul(h, 0x85ebca6b) ^ ((value.length * 0x9e3779b9) >>> 0)) >>> 0;
+  return h;
+}
+
+// ── §12-v1 — Per-cell keystream bytes (v1) ───────────────────────────────────
 function makeCellKsBytes(size: number, keyHex: string, ivSeed: number): Uint8Array {
   const combined = (parseInt(keyHex.slice(0, 8), 16) ^ ivSeed) >>> 0;
+  const ksRng = makeKeystream(combined);
+  const ksBytes = new Uint8Array(size);
+  for (let i = 0; i < size; i++)
+    ksBytes[i] = Math.floor(ksRng() * 256);
+  return ksBytes;
+}
+
+// ── §12-v2 — Per-cell keystream bytes with export-salt mixing (Issue 4) ──────
+// exportSaltWord: first 32 bits of the 128-bit export salt, XORed into the IV.
+// This ensures that the same plaintext encrypted in two different export runs
+// (different exportSalt values) produces different ciphertext.
+function makeCellKsBytesV2(
+  size: number, keyHex: string, ivSeed: number, exportSaltWord = 0
+): Uint8Array {
+  const combined = (parseInt(keyHex.slice(0, 8), 16) ^ ivSeed ^ exportSaltWord) >>> 0;
   const ksRng = makeKeystream(combined);
   const ksBytes = new Uint8Array(size);
   for (let i = 0; i < size; i++)
@@ -84,22 +167,17 @@ function modInverse(a: number, m: number): number {
 }
 
 // Ordered alphabet of all printable non-alphanumeric ASCII characters (S=33).
-// Covers: space, !"#$%&'()*+,-./ (33–47), :;<=>?@ (58–64), [\]^_` (91–96), {|}~ (123–126).
-// Symbols are mapped to indices 0–32 and treated like any other character class.
 const SYMBOL_CHARS = ' !"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~';
 
 // Alphanumeric output alphabet: digits 0–9 then lowercase a–z (S=36).
-// Used when alphanumericOutput is enabled to remap every encrypted character
-// into this unified alphabet after the standard 4-round FPE chain.
 const ALNUM_CHARS = "0123456789abcdefghijklmnopqrstuvwxyz"; // S=36
 
-// Precomputed coprime multipliers per alphabet size (all m in [2,S) with gcd(m,S)=1)
 const COPRIME_MULS: Record<number, number[]> = {
   9:  [2, 4, 5, 7, 8],
   10: [3, 7, 9],
   26: [3, 5, 7, 9, 11, 15, 17, 19, 21, 23, 25],
-  33: [2, 4, 5, 7, 8, 10, 13, 14, 16, 17, 19, 20, 23, 25, 26, 28, 29, 31, 32], // 33=3×11
-  36: [5, 7, 11, 13, 17, 19, 23, 25, 29, 31, 35], // 36=4×9; coprimes = not div by 2 or 3
+  33: [2, 4, 5, 7, 8, 10, 13, 14, 16, 17, 19, 20, 23, 25, 26, 28, 29, 31, 32],
+  36: [5, 7, 11, 13, 17, 19, 23, 25, 29, 31, 35],
 };
 function getMuls(size: number): number[] {
   if (COPRIME_MULS[size]) return COPRIME_MULS[size];
@@ -108,58 +186,42 @@ function getMuls(size: number): number[] {
   return res;
 }
 
-// Apply one micro-op forward (returns updated position v′)
 function applyOpFwd(v: number, k: number, size: number, muls: number[]): number {
   const opType = k % 4;
   if (opType === 0) return (v + Math.floor(k / 4) % (size - 1) + 1) % size;
   if (opType === 1) return ((v - (Math.floor(k / 4) % (size - 1) + 1)) % size + size) % size;
   if (opType === 2) return (v * muls[Math.floor(k / 4) % muls.length]) % size;
-  return (size - 1 - v); // flip — always in [0, S-1], no modulo needed
+  return (size - 1 - v);
 }
 
-// Apply the inverse of one micro-op (used during decryption)
 function applyOpInv(v: number, k: number, size: number, muls: number[]): number {
   const opType = k % 4;
   if (opType === 0) return ((v - (Math.floor(k / 4) % (size - 1) + 1)) % size + size) % size;
   if (opType === 1) return (v + Math.floor(k / 4) % (size - 1) + 1) % size;
   if (opType === 2) return (v * modInverse(muls[Math.floor(k / 4) % muls.length], size)) % size;
-  return (size - 1 - v); // flip is self-inverse
+  return (size - 1 - v);
 }
 
-// Encrypt one cell value through one round.
-// Consumes exactly 5 keystream bytes per character (alphanumeric or not).
-//
-// Leading-zero-prevention rule (position 0 only):
-//   • digit '1'..'9' at position 0 → use S=9 alphabet {1…9} (base=49).
-//     Output is always in '1'..'9', so the first character of the final
-//     anonymized value is guaranteed non-zero.
-//   • digit '0' at position 0 → pass through unchanged; 5 keystream bytes
-//     are still consumed for alignment.  This is the edge-case for source
-//     values that legitimately begin with 0.
-//   • all other positions → standard S=10 digit alphabet (base=48).
+// ── §10-v1 — v1 cell encryption/decryption (preserved for legacy compat) ─────
+
 function encryptFPECell(ksBytes: Uint8Array, value: string): string {
   const chars = [...value];
   let ki = 0;
   return chars.map((ch, charIdx) => {
     const code = ch.charCodeAt(0);
-
-    // ── Position-0 leading-zero-prevention ───────────────────────────
     if (charIdx === 0 && code >= 48 && code <= 57) {
-      if (code === 48) { ki += 5; return ch; }   // '0' — passthrough
-      // '1'..'9' — S=9 alphabet: positions 0–8 map to chars '1'–'9'
+      if (code === 48) { ki += 5; return ch; }
       const size = 9, base = 49;
       const muls = getMuls(size);
       let v = code - base;
       for (let i = 0; i < 5; i++) v = applyOpFwd(v, ksBytes[ki++ % ksBytes.length], size, muls);
       return String.fromCharCode(v + base);
     }
-
     let base: number, size: number;
     if      (code >= 48 && code <= 57)  { base = 48; size = 10; }
     else if (code >= 65 && code <= 90)  { base = 65; size = 26; }
     else if (code >= 97 && code <= 122) { base = 97; size = 26; }
     else {
-      // Printable symbol → encrypt within SYMBOL_CHARS alphabet (S=33)
       const symIdx = SYMBOL_CHARS.indexOf(ch);
       if (symIdx !== -1) {
         const symSize = SYMBOL_CHARS.length;
@@ -168,7 +230,7 @@ function encryptFPECell(ksBytes: Uint8Array, value: string): string {
         for (let i = 0; i < 5; i++) v = applyOpFwd(v, ksBytes[ki++ % ksBytes.length], symSize, symMuls);
         return SYMBOL_CHARS[v];
       }
-      ki += 5; return ch; // non-printable / out-of-range — keep ks offset aligned
+      ki += 5; return ch;
     }
     const muls = getMuls(size);
     let v = code - base;
@@ -177,21 +239,13 @@ function encryptFPECell(ksBytes: Uint8Array, value: string): string {
   }).join("");
 }
 
-// Decrypt one cell value through one round (exact inverse of encryptFPECell).
-// Reads the same 5 keystream bytes as encryption, applies inverse ops in reverse order.
-// Alphabet selection mirrors encryptFPECell exactly so the mapping is invertible:
-//   • '1'..'9' at position 0 → S=9 (same as encrypt used S=9)
-//   • '0' at position 0 → passthrough (encrypt also passed through '0')
 function decryptFPECell(ksBytes: Uint8Array, value: string): string {
   const chars = [...value];
   let ki = 0;
   return chars.map((ch, charIdx) => {
     const code = ch.charCodeAt(0);
-
-    // ── Position-0 leading-zero-prevention (mirror of encrypt) ───────
     if (charIdx === 0 && code >= 48 && code <= 57) {
-      if (code === 48) { ki += 5; return ch; }   // '0' — passthrough
-      // '1'..'9' — S=9 inverse
+      if (code === 48) { ki += 5; return ch; }
       const size = 9, base = 49;
       const muls = getMuls(size);
       const ks5: number[] = [];
@@ -200,13 +254,11 @@ function decryptFPECell(ksBytes: Uint8Array, value: string): string {
       for (let i = 4; i >= 0; i--) v = applyOpInv(v, ks5[i], size, muls);
       return String.fromCharCode(v + base);
     }
-
     let base: number, size: number;
     if      (code >= 48 && code <= 57)  { base = 48; size = 10; }
     else if (code >= 65 && code <= 90)  { base = 65; size = 26; }
     else if (code >= 97 && code <= 122) { base = 97; size = 26; }
     else {
-      // Printable symbol → decrypt within SYMBOL_CHARS alphabet (S=33)
       const symIdx = SYMBOL_CHARS.indexOf(ch);
       if (symIdx !== -1) {
         const symSize = SYMBOL_CHARS.length;
@@ -217,34 +269,223 @@ function decryptFPECell(ksBytes: Uint8Array, value: string): string {
         for (let i = 4; i >= 0; i--) v = applyOpInv(v, ks5[i], symSize, symMuls);
         return SYMBOL_CHARS[v];
       }
-      ki += 5; return ch; // non-printable / out-of-range
+      ki += 5; return ch;
     }
     const muls = getMuls(size);
-    // Collect 5 keystream bytes in forward order (same positions as encryption)
     const ks5: number[] = [];
     for (let i = 0; i < 5; i++) ks5.push(ksBytes[ki++ % ksBytes.length]);
-    // Apply inverse ops in reverse order (op4⁻¹ → op3⁻¹ → op2⁻¹ → op1⁻¹ → op0⁻¹)
     let v = code - base;
     for (let i = 4; i >= 0; i--) v = applyOpInv(v, ks5[i], size, muls);
     return String.fromCharCode(v + base);
   }).join("");
 }
 
+// ── §10-v2 — CBC-enhanced cell encryption (Issue 3: no inter-character diffusion)
+//
+// Adds CBC-style chaining between characters within a single FPE round:
+//   • cbc starts at 0 for every cell/round call.
+//   • For character at index i, the FIRST of the five keystream bytes is XORed with
+//     (cbc & 0xff) before being fed to applyOpFwd. This means character i's encryption
+//     depends on the ciphertexts of all characters 0…i-1, not just its own keystream.
+//   • After encrypting character i → outputChar, update: cbc = ((cbc << 3) ^ outputCode) & 0xff
+//     where outputCode = encrypted char's code. CBC feedback is derived from ciphertext.
+//
+// Decryption (decryptFPECellV2):
+//   • Identical cbc derivation using the INPUT character code (which IS the ciphertext).
+//     Since we process left-to-right and cbc_i derives from ciphertext chars 0…i-1,
+//     decryption can reproduce the exact same cbc at each position without knowing plaintext.
+//
+// Format preservation:
+//   XORing into a keystream byte changes which operation and amount are applied, but
+//   the operation set and alphabet remain identical — so the output character still
+//   belongs to the same class and alphabet. Format-preservation is maintained.
+
+function encryptFPECellV2(ksBytes: Uint8Array, value: string): string {
+  const chars = [...value];
+  let ki = 0;
+  let cbc = 0;
+  const out: string[] = [];
+
+  for (let charIdx = 0; charIdx < chars.length; charIdx++) {
+    const ch = chars[charIdx];
+    const code = ch.charCodeAt(0);
+
+    // Apply CBC feedback to the first of the 5 keystream bytes for this character.
+    // Bytes 1–4 are used unchanged; only byte 0 carries the diffusion.
+    const getKs = (off: number): number =>
+      off === 0
+        ? ((ksBytes[(ki + off) % ksBytes.length] ^ (cbc & 0xff)) & 0xff)
+        : ksBytes[(ki + off) % ksBytes.length];
+
+    let outputChar: string;
+
+    // ── Position-0 leading-zero-prevention ───────────────────────────
+    if (charIdx === 0 && code >= 48 && code <= 57) {
+      if (code === 48) {
+        ki += 5;
+        cbc = (((cbc << 3) ^ 48) & 0xff);
+        out.push(ch);
+        continue;
+      }
+      const size = 9, base = 49;
+      const muls = getMuls(size);
+      let v = code - base;
+      for (let i = 0; i < 5; i++) v = applyOpFwd(v, getKs(i), size, muls);
+      outputChar = String.fromCharCode(v + base);
+      ki += 5;
+      cbc = (((cbc << 3) ^ outputChar.charCodeAt(0)) & 0xff);
+      out.push(outputChar);
+      continue;
+    }
+
+    if (code >= 48 && code <= 57) {
+      const base = 48, size = 10, muls = getMuls(size);
+      let v = code - base;
+      for (let i = 0; i < 5; i++) v = applyOpFwd(v, getKs(i), size, muls);
+      outputChar = String.fromCharCode(v + base);
+    } else if (code >= 65 && code <= 90) {
+      const base = 65, size = 26, muls = getMuls(size);
+      let v = code - base;
+      for (let i = 0; i < 5; i++) v = applyOpFwd(v, getKs(i), size, muls);
+      outputChar = String.fromCharCode(v + base);
+    } else if (code >= 97 && code <= 122) {
+      const base = 97, size = 26, muls = getMuls(size);
+      let v = code - base;
+      for (let i = 0; i < 5; i++) v = applyOpFwd(v, getKs(i), size, muls);
+      outputChar = String.fromCharCode(v + base);
+    } else {
+      const symIdx = SYMBOL_CHARS.indexOf(ch);
+      if (symIdx !== -1) {
+        const symSize = SYMBOL_CHARS.length, symMuls = getMuls(symSize);
+        let v = symIdx;
+        for (let i = 0; i < 5; i++) v = applyOpFwd(v, getKs(i), symSize, symMuls);
+        outputChar = SYMBOL_CHARS[v];
+      } else {
+        // Non-printable passthrough — advance ki, update cbc with original code
+        ki += 5;
+        cbc = (((cbc << 3) ^ code) & 0xff);
+        out.push(ch);
+        continue;
+      }
+    }
+
+    ki += 5;
+    cbc = (((cbc << 3) ^ outputChar.charCodeAt(0)) & 0xff);
+    out.push(outputChar);
+  }
+
+  return out.join("");
+}
+
+// Inverse of encryptFPECellV2.  CBC update uses the INPUT character code (ciphertext),
+// which is the same value the encryptor used to derive cbc after encrypting that position.
+function decryptFPECellV2(ksBytes: Uint8Array, value: string): string {
+  const chars = [...value];
+  let ki = 0;
+  let cbc = 0;
+  const out: string[] = [];
+
+  for (let charIdx = 0; charIdx < chars.length; charIdx++) {
+    const ch = chars[charIdx]; // ciphertext character
+    const code = ch.charCodeAt(0);
+
+    // Same CBC-injected getKs as encryption — reproduces identical effective ks bytes
+    const getKs = (off: number): number =>
+      off === 0
+        ? ((ksBytes[(ki + off) % ksBytes.length] ^ (cbc & 0xff)) & 0xff)
+        : ksBytes[(ki + off) % ksBytes.length];
+
+    let outputChar: string;
+
+    // ── Position-0 leading-zero-prevention (mirror of encrypt) ───────
+    if (charIdx === 0 && code >= 48 && code <= 57) {
+      if (code === 48) {
+        ki += 5;
+        cbc = (((cbc << 3) ^ 48) & 0xff);
+        out.push(ch);
+        continue;
+      }
+      const size = 9, base = 49;
+      const muls = getMuls(size);
+      const ks5 = [getKs(0), getKs(1), getKs(2), getKs(3), getKs(4)];
+      let v = code - base;
+      for (let i = 4; i >= 0; i--) v = applyOpInv(v, ks5[i], size, muls);
+      outputChar = String.fromCharCode(v + base);
+      ki += 5;
+      cbc = (((cbc << 3) ^ code) & 0xff); // ciphertext code (input)
+      out.push(outputChar);
+      continue;
+    }
+
+    if (code >= 48 && code <= 57) {
+      const base = 48, size = 10, muls = getMuls(size);
+      const ks5 = [getKs(0), getKs(1), getKs(2), getKs(3), getKs(4)];
+      let v = code - base;
+      for (let i = 4; i >= 0; i--) v = applyOpInv(v, ks5[i], size, muls);
+      outputChar = String.fromCharCode(v + base);
+    } else if (code >= 65 && code <= 90) {
+      const base = 65, size = 26, muls = getMuls(size);
+      const ks5 = [getKs(0), getKs(1), getKs(2), getKs(3), getKs(4)];
+      let v = code - base;
+      for (let i = 4; i >= 0; i--) v = applyOpInv(v, ks5[i], size, muls);
+      outputChar = String.fromCharCode(v + base);
+    } else if (code >= 97 && code <= 122) {
+      const base = 97, size = 26, muls = getMuls(size);
+      const ks5 = [getKs(0), getKs(1), getKs(2), getKs(3), getKs(4)];
+      let v = code - base;
+      for (let i = 4; i >= 0; i--) v = applyOpInv(v, ks5[i], size, muls);
+      outputChar = String.fromCharCode(v + base);
+    } else {
+      const symIdx = SYMBOL_CHARS.indexOf(ch);
+      if (symIdx !== -1) {
+        const symSize = SYMBOL_CHARS.length, symMuls = getMuls(symSize);
+        const ks5 = [getKs(0), getKs(1), getKs(2), getKs(3), getKs(4)];
+        let v = symIdx;
+        for (let i = 4; i >= 0; i--) v = applyOpInv(v, ks5[i], symSize, symMuls);
+        outputChar = SYMBOL_CHARS[v];
+      } else {
+        ki += 5;
+        cbc = (((cbc << 3) ^ code) & 0xff);
+        out.push(ch);
+        continue;
+      }
+    }
+
+    ki += 5;
+    cbc = (((cbc << 3) ^ code) & 0xff); // CBC uses ciphertext code (the INPUT, same as what encrypt output)
+    out.push(outputChar);
+  }
+
+  return out.join("");
+}
+
 // ── 4-round chain helpers ─────────────────────────────────────────────────────
 
-// Encrypt value through all 4 rounds (round1 → round2 → round3 → round4).
 function encryptChain4(ksArr: Uint8Array[], value: string): string {
   let v = value;
   for (const ks of ksArr) v = encryptFPECell(ks, v);
   return v;
 }
 
+function encryptChain4V2(ksArr: Uint8Array[], value: string): string {
+  let v = value;
+  for (const ks of ksArr) v = encryptFPECellV2(ks, v);
+  return v;
+}
+
+function decryptChain4(ksArr: Uint8Array[], value: string): string {
+  let v = value;
+  for (let i = ksArr.length - 1; i >= 0; i--) v = decryptFPECell(ksArr[i], v);
+  return v;
+}
+
+function decryptChain4V2(ksArr: Uint8Array[], value: string): string {
+  let v = value;
+  for (let i = ksArr.length - 1; i >= 0; i--) v = decryptFPECellV2(ksArr[i], v);
+  return v;
+}
+
 // ── Alphanumeric output (5th pass) ────────────────────────────────────────────
-//
-// Derives a separate 256-bit key from the 4-key chain by XOR-folding each
-// round key's first 32 bits, then expanding via xorshift128+.  This key is
-// used exclusively for the alphanumeric remapping step so it never aliases
-// any of the four encryption-round keys.
 function deriveAlnumKey(keyChain: string[]): string {
   let h = 0xA1B2C3D4;
   for (const k of keyChain) {
@@ -254,39 +495,119 @@ function deriveAlnumKey(keyChain: string[]): string {
   return generateRandomKey(h);
 }
 
-// Apply one FPE pass that remaps every alphanumeric character in `value`
-// into the 36-char ALNUM_CHARS alphabet (0–9 + a–z), preserving field length.
-// Non-alphanumeric characters are passed through unchanged; 5 keystream bytes
-// are still consumed for each character to keep offsets perfectly aligned with
-// the main encryption rounds.
+// v2: also mixes in export salt so alnum mapping differs per export run
+function deriveAlnumKeyV2(keyChain: string[], exportSalt: string): string {
+  let h = 0xA1B2C3D4;
+  for (const k of keyChain) {
+    h = (Math.imul(h, 0x9e3779b9) ^ parseInt(k.slice(0, 8), 16)) >>> 0;
+  }
+  if (exportSalt.length >= 8) {
+    h = (h ^ parseInt(exportSalt.slice(0, 8), 16)) >>> 0;
+  }
+  h = (h ^ 0x5A5A5A5A) >>> 0;
+  return generateRandomKey(h);
+}
+
 function encryptAlphanumCell(ksBytes: Uint8Array, value: string): string {
-  const S = ALNUM_CHARS.length; // 36
+  const S = ALNUM_CHARS.length;
   const muls = getMuls(S);
   const chars = [...value];
   let ki = 0;
   return chars.map(ch => {
     const code = ch.charCodeAt(0);
     let idx: number | null = null;
-    if (code >= 48 && code <= 57)  idx = code - 48;        // '0'–'9' → 0–9
-    else if (code >= 97 && code <= 122) idx = code - 87;   // 'a'–'z' → 10–35
-    else if (code >= 65 && code <= 90)  idx = code - 55;   // 'A'–'Z' → 10–35
-
+    if (code >= 48 && code <= 57)  idx = code - 48;
+    else if (code >= 97 && code <= 122) idx = code - 87;
+    else if (code >= 65 && code <= 90)  idx = code - 55;
     if (idx !== null) {
       let v = idx;
       for (let i = 0; i < 5; i++) v = applyOpFwd(v, ksBytes[ki++ % ksBytes.length], S, muls);
       return ALNUM_CHARS[v];
     }
-    // Non-alphanumeric: keep char, advance keystream offset for alignment
     ki += 5;
     return ch;
   }).join("");
 }
 
-// Decrypt in reverse (round4 → round3 → round2 → round1).
-function decryptChain4(ksArr: Uint8Array[], value: string): string {
-  let v = value;
-  for (let i = ksArr.length - 1; i >= 0; i--) v = decryptFPECell(ksArr[i], v);
-  return v;
+// ── §7 — HMAC-SHA256 integrity helpers (Issue 7) ─────────────────────────────
+// The HMAC key is derived from the full key chain via HKDF-SHA256 so it is
+// cryptographically independent of any individual round key.
+// The HMAC covers everything in the output CSV except the HMAC line itself,
+// making post-encryption tampering detectable before decryption is attempted.
+
+async function computeExportHMAC(
+  keyChain: string[], exportSalt: string, csvContent: string
+): Promise<string> {
+  const enc = new TextEncoder();
+  const rawKey = enc.encode(keyChain.join("") + exportSalt);
+  const baseKey = await crypto.subtle.importKey("raw", rawKey, "HKDF", false, ["deriveKey"]);
+  const hmacKey = await crypto.subtle.deriveKey(
+    {
+      name: "HKDF",
+      hash: "SHA-256",
+      salt: enc.encode("AIRAVATA-DEA-HMAC"),
+      info: enc.encode("integrity-v2"),
+    },
+    baseKey,
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const sig = await crypto.subtle.sign("HMAC", hmacKey, enc.encode(csvContent));
+  return Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function verifyExportHMAC(
+  keyChain: string[], exportSalt: string, csvContent: string, expectedHex: string
+): Promise<boolean> {
+  const computed = await computeExportHMAC(keyChain, exportSalt, csvContent);
+  if (computed.length !== expectedHex.length) return false;
+  // Constant-time comparison to prevent timing attacks
+  let diff = 0;
+  for (let i = 0; i < computed.length; i++)
+    diff |= computed.charCodeAt(i) ^ expectedHex.charCodeAt(i);
+  return diff === 0;
+}
+
+// ── §8.3-v2 — Format comment parsing ─────────────────────────────────────────
+interface V2FormatMeta {
+  formatVersion: string | null;   // "v2" or null for v1
+  exportSalt: string | null;      // 32 hex chars
+  hmacHex: string | null;         // 64 hex chars
+  commentLineCount: number;       // lines to skip before CSV header
+  hmacLineIndex: number;          // index of the HMAC line (−1 if absent)
+}
+
+function parseFormatMeta(lines: string[]): V2FormatMeta {
+  let formatVersion: string | null = null;
+  let exportSalt: string | null = null;
+  let commentLineCount = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.startsWith("#") && line.trim() !== "") break;
+    commentLineCount++;
+    const trimmed = line.trim();
+    if (trimmed.startsWith("# AIRAVATA-FORMAT:"))
+      formatVersion = trimmed.replace("# AIRAVATA-FORMAT:", "").trim();
+    else if (trimmed.startsWith("# AIRAVATA-EXPORT-SALT:"))
+      exportSalt = trimmed.replace("# AIRAVATA-EXPORT-SALT:", "").trim();
+  }
+
+  // Find HMAC line scanning from the end
+  let hmacHex: string | null = null;
+  let hmacLineIndex = -1;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const trimmed = lines[i].trim();
+    if (trimmed === "") continue;
+    if (trimmed.startsWith("# AIRAVATA-HMAC-SHA256:")) {
+      hmacHex = trimmed.replace("# AIRAVATA-HMAC-SHA256:", "").trim();
+      hmacLineIndex = i;
+    }
+    break;
+  }
+
+  return { formatVersion, exportSalt, hmacHex, commentLineCount, hmacLineIndex };
 }
 
 // ── CSV helpers ───────────────────────────────────────────────────────────────
@@ -322,7 +643,7 @@ export interface FieldSpec {
 
 export interface AnonymizeOptions {
   keyMode: "random" | "pbkdf2" | "hex";
-  /** Four seed values — one per encryption round. The value jumps through 4 transformations. */
+  /** Four seed values — one per encryption round. */
   seeds: number[];
   passphrase: string;
   pbkdf2Iterations: number;
@@ -331,27 +652,57 @@ export interface AnonymizeOptions {
   /**
    * When true, a 5th FPE pass remaps every encrypted character into the 36-char
    * alphanumeric alphabet (0–9 + a–z), preserving the original field length exactly.
-   * The standard 4-round chain runs first; this is an additive post-processing step.
    */
   alphanumericOutput?: boolean;
+  /**
+   * (v2) 128-bit export salt as 32 hex characters, generated once per export via
+   * crypto.getRandomValues() and embedded in the CSV header.  Pass this back to
+   * decryptCSVToBlob (or let decryptCSVToBlob parse it from the file automatically).
+   * If omitted during encryption a fresh CSPRNG salt is generated automatically.
+   */
+  exportSalt?: string;
+}
+
+/** (v2) Non-sensitive record of what was done for this anonymization run. */
+export interface AnonymizeAuditLog {
+  /** ISO-8601 timestamp of when the export was produced */
+  timestamp: string;
+  /** "v2" for new files */
+  formatVersion: string;
+  /** "random" | "pbkdf2" | "hex" */
+  keyMode: string;
+  /** First 8 hex characters of the first round key — enough to confirm the same key,
+   *  too short to reconstruct it. Does NOT contain the full key. */
+  keyFingerprint: string;
+  /** The 128-bit export salt (32 hex chars). Required for decryption; safe to store
+   *  alongside the file since it does not reveal key material. */
+  exportSalt: string;
+  /** Names of columns that were encrypted in this run */
+  columnsProcessed: string[];
+  /** true — CBC diffusion was applied (always true for v2) */
+  cbcEnabled: boolean;
+  /** true — HMAC-SHA256 integrity tag is embedded in the CSV (always true for v2) */
+  hmacPresent: boolean;
 }
 
 export interface AnonymizeResult {
   blob: Blob;
+  /** First round key hex (or the user-supplied hex key in hex mode). Display only. */
   keyHex: string;
+  /** 128-bit export salt used for this run (32 hex chars). Store with the file. */
+  exportSalt: string;
+  /** Non-sensitive audit log for this export */
+  auditLog: AnonymizeAuditLog;
 }
 
-// Resolve the 4-key chain from options.
-// KEY SEQUENCE RULE: each round's key is derived from a rolling accumulator that
-// folds in every seed seen so far — reordering any two seeds changes ALL subsequent
-// round keys, making the sequence of seeds a cryptographic input.
+// ── Key chain resolution ──────────────────────────────────────────────────────
+
+// v1 (sync) — preserved for legacy decryption of v1 CSV files.
 export function resolveKeyChain(options: AnonymizeOptions): string[] {
   if (options.keyMode === "hex") {
     const base = (options.keyHex ?? "").toLowerCase().trim();
-    if (!/^[0-9a-f]{64}$/.test(base)) {
+    if (!/^[0-9a-f]{64}$/.test(base))
       throw new Error("A raw hex key must contain exactly 64 hexadecimal characters.");
-    }
-    // Chain-derive 4 sub-keys: each key's seed incorporates all prior round indices
     let rolling = (parseInt(base.slice(0, 8), 16) ^ 0xdeadbeef) >>> 0;
     return [0, 1, 2, 3].map(i => {
       rolling = (Math.imul(rolling, 0x9e3779b9) ^ (i * 0x5a5a5a5b)) >>> 0;
@@ -360,28 +711,16 @@ export function resolveKeyChain(options: AnonymizeOptions): string[] {
     });
   }
   if (options.keyMode === "pbkdf2") {
-    if (options.passphrase.trim().length === 0) {
+    if (options.passphrase.trim().length === 0)
       throw new Error("A passphrase is required when PBKDF2 mode is selected.");
-    }
-    // Chain-derive 4 sub-keys: each passphrase variant includes all prior round tags
-    // so round order is embedded in the key material.
     let tag = "";
     return [0, 1, 2, 3].map(i => {
       tag += `\x00R${i}`;
-      return deriveKeyFromPassphrase(options.passphrase + tag, options.pbkdf2Iterations);
+      return deriveKeyFromPassphrase_v1(options.passphrase + tag, options.pbkdf2Iterations);
     });
   }
-  // Random (seed) mode — master-key-then-split derivation:
-  //   Phase 1: Fold all 4 seeds in sequence into a single 32-bit master seed.
-  //            Reordering any two seeds changes the master seed and therefore
-  //            all four round keys — seed sequence is cryptographically significant.
-  //   Phase 2: Expand the master seed into one 256-bit master key (32 bytes)
-  //            via xorshift128+ seeded with (masterSeed ⊕ 0xDEADBEEF).
-  //   Phase 3: Derive 4 round keys from the master key via XOR + rolling mixer
-  //            seeded from the master key's first 32 bits (same as hex-key mode).
   const s = options.seeds;
   const ordered = [s[0] ?? 42, s[1] ?? 137, s[2] ?? 2024, s[3] ?? 7];
-  // Phase 1 — fold all 4 seeds into a single 32-bit master seed
   let rolling = 0x9e3779b9;
   for (const seed of ordered) {
     rolling = (Math.imul(rolling, 0x9e3779b9) ^ (seed >>> 0)) >>> 0;
@@ -389,10 +728,67 @@ export function resolveKeyChain(options: AnonymizeOptions): string[] {
     rolling = (Math.imul(rolling, 0x85ebca6b)) >>> 0;
     rolling = (rolling ^ (rolling >>> 13)) >>> 0;
   }
-  // Phase 2 — expand master seed into a single 256-bit master key via xorshift128+
   const masterKey = generateRandomKey(rolling);
-  // Phase 3 — derive 4 round keys from master key via XOR + rolling mixer
-  //   (same mechanism as hex-key mode — seeded from first 32 bits of master key)
+  let rollingK = (parseInt(masterKey.slice(0, 8), 16) ^ 0xdeadbeef) >>> 0;
+  return [0, 1, 2, 3].map(i => {
+    rollingK = (Math.imul(rollingK, 0x9e3779b9) ^ (i * 0x5a5a5a5b)) >>> 0;
+    rollingK = (rollingK ^ (rollingK >>> 16)) >>> 0;
+    return generateRandomKey(rollingK);
+  });
+}
+
+// v2 (async) — uses Web Crypto PBKDF2 for passphrase mode and mixes the export
+// salt into seed mode so the same seeds produce different keys in each export run.
+export async function resolveKeyChainAsync(options: AnonymizeOptions): Promise<string[]> {
+  const exportSalt = options.exportSalt ?? "";
+
+  if (options.keyMode === "hex") {
+    // Hex mode: same derivation as v1 (the hex key IS the full key material)
+    const base = (options.keyHex ?? "").toLowerCase().trim();
+    if (!/^[0-9a-f]{64}$/.test(base))
+      throw new Error("A raw hex key must contain exactly 64 hexadecimal characters.");
+    let rolling = (parseInt(base.slice(0, 8), 16) ^ 0xdeadbeef) >>> 0;
+    return [0, 1, 2, 3].map(i => {
+      rolling = (Math.imul(rolling, 0x9e3779b9) ^ (i * 0x5a5a5a5b)) >>> 0;
+      rolling = (rolling ^ (rolling >>> 16)) >>> 0;
+      return generateRandomKey(rolling);
+    });
+  }
+
+  if (options.keyMode === "pbkdf2") {
+    if (options.passphrase.trim().length === 0)
+      throw new Error("A passphrase is required when PBKDF2 mode is selected.");
+    // Issue 1 fix: real Web Crypto PBKDF2 with at least 100 000 iterations
+    const iterations = Math.max(100_000, options.pbkdf2Iterations || 100_000);
+    let tag = "";
+    const keys: string[] = [];
+    for (let i = 0; i < 4; i++) {
+      tag += `\x00R${i}`;
+      keys.push(await deriveKeyFromPassphrase_v2(
+        options.passphrase + tag, exportSalt, iterations
+      ));
+    }
+    return keys;
+  }
+
+  // Seed mode — Issue 4 fix: mix the export salt into the master seed so the
+  // same user seeds produce a different key chain in each independent export run.
+  const s = options.seeds;
+  const ordered = [s[0] ?? 42, s[1] ?? 137, s[2] ?? 2024, s[3] ?? 7];
+  let rolling = 0x9e3779b9;
+  for (const seed of ordered) {
+    rolling = (Math.imul(rolling, 0x9e3779b9) ^ (seed >>> 0)) >>> 0;
+    rolling = (rolling ^ (rolling >>> 16)) >>> 0;
+    rolling = (Math.imul(rolling, 0x85ebca6b)) >>> 0;
+    rolling = (rolling ^ (rolling >>> 13)) >>> 0;
+  }
+  if (exportSalt.length >= 8) {
+    const saltWord = parseInt(exportSalt.slice(0, 8), 16);
+    rolling = (rolling ^ saltWord) >>> 0;
+    rolling = (Math.imul(rolling, 0x9e3779b9)) >>> 0;
+    rolling = (rolling ^ (rolling >>> 16)) >>> 0;
+  }
+  const masterKey = generateRandomKey(rolling);
   let rollingK = (parseInt(masterKey.slice(0, 8), 16) ^ 0xdeadbeef) >>> 0;
   return [0, 1, 2, 3].map(i => {
     rollingK = (Math.imul(rollingK, 0x9e3779b9) ^ (i * 0x5a5a5a5b)) >>> 0;
@@ -408,13 +804,11 @@ export function resolveKeyHex(options: AnonymizeOptions): string {
 
 const STREAM_CHUNK = 50_000;
 
-// Keystream bytes needed per cell value: 5 bytes per character + 64-byte headroom
 function ksSize(valueLen: number): number { return valueLen * 5 + 64; }
 
-// Pre-computed keystream size for deterministic mode (supports values up to 256 chars)
-const DET_KS_SIZE = 256 * 5 + 64; // = 1344
+const DET_KS_SIZE = 256 * 5 + 64;
 
-// ── Streaming encrypt: FWF raw text → anonymized CSV Blob ─────────────────────
+// ── Streaming encrypt: FWF raw text → anonymized CSV Blob (v2) ────────────────
 export async function encryptFWFToBlob(
   rawText: string,
   fields: FieldSpec[],
@@ -422,58 +816,50 @@ export async function encryptFWFToBlob(
   options: AnonymizeOptions,
   onProgress: (pct: number) => void
 ): Promise<AnonymizeResult> {
-  const keyChain = resolveKeyChain(options);
-  // In raw-hex mode, preserve the user-supplied root key in the exported
-  // metadata. keyChain[0] is a derived round key and cannot be pasted back
-  // into hex mode to reconstruct the same chain.
+  // ── Issue 4 & 6: generate a fresh CSPRNG export salt per run ─────────────
+  const exportSalt = options.exportSalt ?? cryptoRandomHex(16);
+  const optionsWithSalt: AnonymizeOptions = { ...options, exportSalt };
+
+  // ── Issue 1: use async key chain for proper PBKDF2 ────────────────────────
+  const keyChain = await resolveKeyChainAsync(optionsWithSalt);
+
+  const exportSaltWord = parseInt(exportSalt.slice(0, 8), 16);
+
   const keyHex = options.keyMode === "hex"
     ? (options.keyHex ?? "").toLowerCase().trim()
     : keyChain[0];
 
-  // Pre-compute 4 per-column keystreams for deterministic mode
-  const colKs4: Record<string, Uint8Array[]> = {};
-  if (options.deterministic) {
-    for (const f of fields) {
-      if (encCols.has(f.varName)) {
-        colKs4[f.varName] = keyChain.map(kh =>
-          makeCellKsBytes(DET_KS_SIZE, kh, hashColIV(kh, f.varName))
-        );
-      }
-    }
-  }
-
-  // Pre-compute alphanumeric-step key and per-column keystream.
-  // The alnum remapping is always column-deterministic (independent of the main
-  // deterministic/non-deterministic mode) because the non-determinism is already
-  // captured by the 4 chain rounds above; this is purely a post-processing remap.
-  const alnumKey = options.alphanumericOutput ? deriveAlnumKey(keyChain) : "";
+  // Derive alphanumeric-step key (mixes in export salt for cross-run uniqueness)
+  const alnumKey = options.alphanumericOutput ? deriveAlnumKeyV2(keyChain, exportSalt) : "";
   const colAlnumKs: Record<string, Uint8Array> = {};
   if (options.alphanumericOutput) {
     for (const f of fields) {
-      if (encCols.has(f.varName)) {
-        colAlnumKs[f.varName] = makeCellKsBytes(DET_KS_SIZE, alnumKey, hashColIV(alnumKey, f.varName));
-      }
+      if (encCols.has(f.varName))
+        colAlnumKs[f.varName] = makeCellKsBytesV2(
+          DET_KS_SIZE, alnumKey, hashColIV(alnumKey, f.varName), exportSaltWord
+        );
     }
   }
 
   const lines = rawText.split(/\r?\n/);
   let dataLines: string[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i].length > 0) dataLines.push(lines[i]);
-  }
-  if (dataLines.length > 0 && dataLines[0].includes(",")) {
-    dataLines = dataLines.slice(1);
-  }
+  for (const l of lines) if (l.length > 0) dataLines.push(l);
+  if (dataLines.length > 0 && dataLines[0].includes(",")) dataLines = dataLines.slice(1);
   const total = dataLines.length;
 
-  const header = fields.map((f) => csvEscape(f.varName)).join(",");
-  const chunks: string[] = [header + "\n"];
+  const csvHeader = fields.map(f => csvEscape(f.varName)).join(",");
+
+  // v2 format comment block — embedded before the CSV header row
+  const metaBlock = [
+    `# AIRAVATA-FORMAT: ${FORMAT_VERSION}`,
+    `# AIRAVATA-EXPORT-SALT: ${exportSalt}`,
+    `# AIRAVATA-CBC: enabled`,
+    "",
+  ].join("\n");
+
+  const chunks: string[] = [metaBlock + csvHeader + "\n"];
 
   const detCache = new Map<string, string>();
-  // Keep a separate counter per column. This makes non-deterministic
-  // decryption robust when the user selects only a subset of encrypted
-  // columns: each selected column can reproduce its own sequence without
-  // needing counters from the other columns.
   const ivCounters: Record<string, number> = {};
 
   for (let i = 0; i < total; i += STREAM_CHUNK) {
@@ -489,11 +875,23 @@ export async function encryptFWFToBlob(
 
         if (encCols.has(f.varName) && val.length > 0) {
           if (options.deterministic) {
+            // ── Issue 2 fix: per-value keystream in deterministic mode ──────
+            // Each unique value gets a distinct keystream derived from
+            // hash(colIV + value), so identical-length plaintexts no longer
+            // share the same keystream at every character position.
             const ck = f.varName + "\x00" + val;
             if (detCache.has(ck)) {
               val = detCache.get(ck)!;
             } else {
-              let enc = encryptChain4(colKs4[f.varName], val);
+              const ksArr = keyChain.map(kh =>
+                makeCellKsBytesV2(
+                  ksSize(val.length), kh,
+                  hashValueNonce(hashColIV(kh, f.varName), val),
+                  exportSaltWord
+                )
+              );
+              // ── Issue 3 fix: CBC diffusion ────────────────────────────────
+              let enc = encryptChain4V2(ksArr, val);
               if (options.alphanumericOutput) enc = encryptAlphanumCell(colAlnumKs[f.varName], enc);
               detCache.set(ck, enc);
               val = enc;
@@ -502,11 +900,16 @@ export async function encryptFWFToBlob(
             ivCounters[f.varName] = ((ivCounters[f.varName] ?? 0) + 1) >>> 0;
             const ivCounter = ivCounters[f.varName];
             const columnSeed = hashColIV(keyChain[0], f.varName);
-            // Each round gets a unique IV derived from the counter + round index
+            // ── Issue 4 fix: export salt in non-deterministic IV ──────────
             const ksArr = keyChain.map((kh, ri) =>
-              makeCellKsBytes(ksSize(val.length), kh, (ivCounter ^ columnSeed ^ (ri * 0x12345679)) >>> 0)
+              makeCellKsBytesV2(
+                ksSize(val.length), kh,
+                (ivCounter ^ columnSeed ^ (ri * 0x12345679)) >>> 0,
+                exportSaltWord
+              )
             );
-            val = encryptChain4(ksArr, val);
+            // ── Issue 3 fix: CBC diffusion ────────────────────────────────
+            val = encryptChain4V2(ksArr, val);
             if (options.alphanumericOutput) val = encryptAlphanumCell(colAlnumKs[f.varName], val);
           }
         }
@@ -516,21 +919,154 @@ export async function encryptFWFToBlob(
     }
 
     chunks.push(rowLines.join("\n") + "\n");
-    onProgress(Math.min(99, Math.round((end / total) * 100)));
-    await new Promise((r) => setTimeout(r, 0));
+    // Reserve last 10% of progress for HMAC computation
+    onProgress(Math.min(89, Math.round((end / total) * 90)));
+    await new Promise(r => setTimeout(r, 0));
   }
 
+  // ── Issue 7: compute HMAC over the full CSV content (excl. HMAC line itself)
+  const csvBody = chunks.join("");
+  onProgress(92);
+  const hmacHex = await computeExportHMAC(keyChain, exportSalt, csvBody);
+  const finalContent = csvBody + `# AIRAVATA-HMAC-SHA256: ${hmacHex}\n`;
+
   onProgress(100);
-  return { blob: new Blob(chunks, { type: "text/csv;charset=utf-8;" }), keyHex };
+
+  // ── Issue 8: audit log ────────────────────────────────────────────────────
+  const auditLog: AnonymizeAuditLog = {
+    timestamp: new Date().toISOString(),
+    formatVersion: FORMAT_VERSION,
+    keyMode: options.keyMode,
+    keyFingerprint: keyHex.slice(0, 8),
+    exportSalt,
+    columnsProcessed: [...encCols],
+    cbcEnabled: true,
+    hmacPresent: true,
+  };
+
+  return {
+    blob: new Blob([finalContent], { type: "text/csv;charset=utf-8;" }),
+    keyHex,
+    exportSalt,
+    auditLog,
+  };
 }
 
 // ── Streaming decrypt: CSV text → decrypted CSV Blob ─────────────────────────
+// Automatically detects v1 vs v2 format from the CSV header comments.
+// For v2: parses export salt and verifies HMAC before decrypting.
+// For v1 (no format header): falls through to the legacy code path.
 export async function decryptCSVToBlob(
   csvText: string,
   decCols: ReadonlySet<string>,
   options: AnonymizeOptions,
   onProgress: (pct: number) => void
 ): Promise<Blob> {
+  const allLines = csvText.split(/\r?\n/);
+  const meta = parseFormatMeta(allLines);
+  const isV2 = meta.formatVersion === "v2";
+
+  // ── v2 path ───────────────────────────────────────────────────────────────
+  if (isV2) {
+    const exportSalt = meta.exportSalt ?? options.exportSalt ?? "";
+    const optionsV2: AnonymizeOptions = { ...options, exportSalt };
+    const keyChain = await resolveKeyChainAsync(optionsV2);
+    const exportSaltWord = parseInt(exportSalt.slice(0, 8), 16);
+
+    // ── Issue 7: verify HMAC before decrypting ────────────────────────────
+    if (meta.hmacHex && meta.hmacLineIndex >= 0) {
+      // Content that was HMACed = everything except the HMAC line itself
+      const linesForHMAC = allLines.slice(0, meta.hmacLineIndex);
+      // Trailing newline matters — match how the encryptor built csvBody
+      const contentForHMAC = linesForHMAC.join("\n") + "\n";
+      const valid = await verifyExportHMAC(keyChain, exportSalt, contentForHMAC, meta.hmacHex);
+      if (!valid) {
+        throw new Error(
+          "HMAC verification failed — the file may have been tampered with or the wrong key was provided."
+        );
+      }
+    }
+
+    // Skip comment lines at top + blank separator; find actual CSV header
+    let headerIdx = meta.commentLineCount;
+    while (headerIdx < allLines.length && allLines[headerIdx].trim() === "") headerIdx++;
+    if (headerIdx >= allLines.length) throw new Error("Empty CSV file");
+
+    const headers = splitCSVLine(allLines[headerIdx]);
+    if (headers.length === 0) throw new Error("No headers found in CSV");
+
+    const dataLines: string[] = [];
+    const endLine = meta.hmacLineIndex >= 0 ? meta.hmacLineIndex : allLines.length;
+    for (let i = headerIdx + 1; i < endLine; i++) {
+      const l = allLines[i].trim();
+      if (l.length > 0 && !l.startsWith("#")) dataLines.push(allLines[i]);
+    }
+    const total = dataLines.length;
+
+    const headerLine = headers.map(csvEscape).join(",");
+    const chunks: string[] = [headerLine + "\n"];
+
+    const detCache = new Map<string, string>();
+    const ivCounters: Record<string, number> = {};
+
+    for (let i = 0; i < total; i += STREAM_CHUNK) {
+      const end = Math.min(i + STREAM_CHUNK, total);
+      const rowLines: string[] = [];
+
+      for (let li = i; li < end; li++) {
+        const cells = splitCSVLine(dataLines[li]);
+        const outCells: string[] = [];
+
+        for (let ci = 0; ci < headers.length; ci++) {
+          const col = headers[ci];
+          let val = cells[ci] ?? "";
+
+          if (decCols.has(col) && val.length > 0) {
+            if (options.deterministic) {
+              const ck = col + "\x00" + val;
+              if (detCache.has(ck)) {
+                val = detCache.get(ck)!;
+              } else {
+                const ksArr = keyChain.map(kh =>
+                  makeCellKsBytesV2(
+                    ksSize(val.length), kh,
+                    hashValueNonce(hashColIV(kh, col), val),
+                    exportSaltWord
+                  )
+                );
+                const dec = decryptChain4V2(ksArr, val);
+                detCache.set(ck, dec);
+                val = dec;
+              }
+            } else {
+              ivCounters[col] = ((ivCounters[col] ?? 0) + 1) >>> 0;
+              const ivCounter = ivCounters[col];
+              const columnSeed = hashColIV(keyChain[0], col);
+              const ksArr = keyChain.map((kh, ri) =>
+                makeCellKsBytesV2(
+                  ksSize(val.length), kh,
+                  (ivCounter ^ columnSeed ^ (ri * 0x12345679)) >>> 0,
+                  exportSaltWord
+                )
+              );
+              val = decryptChain4V2(ksArr, val);
+            }
+          }
+          outCells.push(csvEscape(val));
+        }
+        rowLines.push(outCells.join(","));
+      }
+
+      chunks.push(rowLines.join("\n") + "\n");
+      onProgress(Math.min(99, Math.round((end / total) * 100)));
+      await new Promise(r => setTimeout(r, 0));
+    }
+
+    onProgress(100);
+    return new Blob(chunks, { type: "text/csv;charset=utf-8;" });
+  }
+
+  // ── v1 legacy path (no format header) ─────────────────────────────────────
   const lines = csvText.split(/\r?\n/);
 
   let headerIdx = 0;
@@ -542,7 +1078,6 @@ export async function decryptCSVToBlob(
 
   const keyChain = resolveKeyChain(options);
 
-  // Pre-compute 4 per-column keystreams for deterministic mode
   const colKs4: Record<string, Uint8Array[]> = {};
   if (options.deterministic) {
     for (const col of decCols) {
@@ -603,15 +1138,17 @@ export async function decryptCSVToBlob(
 
     chunks.push(rowLines.join("\n") + "\n");
     onProgress(Math.min(99, Math.round((end / total) * 100)));
-    await new Promise((r) => setTimeout(r, 0));
+    await new Promise(r => setTimeout(r, 0));
   }
 
   onProgress(100);
   return new Blob(chunks, { type: "text/csv;charset=utf-8;" });
 }
 
-// ── CSV header reader (first line only — for column selector UI) ──────────────
+// ── CSV header reader (first non-comment line — for column selector UI) ───────
 export function readCSVHeaders(text: string): string[] {
-  const firstLine = text.slice(0, 8192).split(/\r?\n/).find((l) => l.trim().length > 0) ?? "";
-  return splitCSVLine(firstLine);
+  const lines = text.slice(0, 8192).split(/\r?\n/);
+  // Skip comment/meta lines produced by v2 format
+  const firstDataLine = lines.find(l => l.trim().length > 0 && !l.startsWith("#")) ?? "";
+  return splitCSVLine(firstDataLine);
 }

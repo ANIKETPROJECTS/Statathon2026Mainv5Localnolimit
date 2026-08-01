@@ -1,0 +1,43 @@
+Conduct a full cryptographic security hardening pass on the AIRAVATA DEA anonymization/encryption algorithm. Address every issue below. Do not remove or break the format-preserving property — output must retain the same character class and length as input, and decryption must remain exact and reversible.
+
+ISSUES TO FIX:
+
+1. LOW EFFECTIVE KEY ENTROPY
+The master key is derived from a small number of low-entropy, often human-guessable seed values (small integers, years, short numbers), then expanded via PRNG into a 256-bit key. The 256-bit key length is misleading — actual brute-force resistance is bounded by the real entropy of the seed inputs, not the expanded key size. Fix: require high-entropy seed material, or derive the key using a proper key derivation function (PBKDF2 / Argon2 / HKDF) with a deliberate work factor, so the effective security strength matches the claimed key length and brute-forcing the seed space is computationally infeasible.
+
+2. REUSED KEYSTREAM ACROSS RECORDS (CRITICAL)
+The per-character keystream is currently derived only from {round, round key, column name} — it does not vary per record/row. This means every value in the same column reuses the identical keystream at each character position, which is cryptographically equivalent to a fixed substitution cipher applied down the entire column. This enables:
+   - Full-column recovery from a single known plaintext–ciphertext pair
+   - Classical frequency analysis attacks with zero known plaintexts
+   - Cross-record linkage and re-identification via matching ciphertext patterns, without ever decrypting anything
+Fix: inject a per-record, per-cell unique nonce/salt into the keystream derivation (e.g. derived from column name + row-unique identifier + round key via a secure hash), so that identical plaintext values in the same column never produce identical ciphertext. The nonce must be deterministically re-derivable or retrievable for decryption without leaking information about the plaintext.
+
+3. NO INTER-CHARACTER DIFFUSION
+Each character is transformed independently, keyed only by its own keystream byte and position — there is no dependency between characters within the same value. This lets an attacker attack each character position in isolation rather than needing to break the whole value at once. Fix: introduce chaining/diffusion between characters within a value (e.g. feedback from previously encrypted characters, similar to CBC-style chaining) while preserving the format-preserving output constraints.
+
+4. DETERMINISM ACROSS RELEASES / KEY REUSE
+If the same key/seed set is reused across multiple exports over time, an attacker holding two or more anonymized exports can correlate identical ciphertexts for the same underlying record across releases, defeating anonymization through longitudinal linkage — a known real-world re-identification technique. Fix: define and enforce a key/seed rotation mechanism (e.g. mandatory new seed or salt per export/release) so ciphertext for the same underlying value differs across independent anonymization runs, while still allowing correct decryption when required.
+
+5. LINKAGE / CORRELATION ATTACKS INDEPENDENT OF THE CIPHER
+Because this is deterministic, reversible pseudonymization rather than statistical anonymization, an attacker with auxiliary data (partial known records, public datasets, leaked samples) can potentially re-identify individuals via pattern/frequency correlation on ciphertext alone, without ever recovering the key. Fix or mitigate where possible: evaluate combining or layering the cipher output with statistical disclosure controls (e.g. k-anonymity, l-diversity, or noise injection/generalization on quasi-identifier columns) so ciphertext-only correlation attacks are also resisted, not just key-recovery attacks.
+
+6. WEAK RANDOMNESS SOURCE
+Any random values used for seeds, nonces, or salts must come from a cryptographically secure random number generator (CSPRNG). Explicitly audit and confirm that no non-cryptographic RNG (e.g. time-seeded or standard library non-crypto random functions) is used anywhere in seed, nonce, or key generation.
+
+7. NO INTEGRITY / TAMPER DETECTION
+Confirm whether anonymized values or the full dataset have any integrity protection (MAC/HMAC or similar) to detect tampering or corruption after anonymization. If not present, add an integrity-verification layer alongside the format-preserving output, without breaking format-preservation of the anonymized values themselves.
+
+8. AUDIT TRAIL FOR CRYPTOGRAPHIC OPERATIONS
+Ensure the system can log which key/seed version, column, and ruleset were used for each anonymization/decryption operation (without logging the actual keys/seeds or plaintext), so misuse or unexpected key reuse can be detected and investigated after the fact.
+
+REQUIREMENTS FOR THE FIX:
+- Preserve full backward-compatible decryption logic wherever legacy data must remain decryptable, and clearly flag any breaking changes to the key/data format.
+- After implementing all fixes, perform an explicit adversarial self-review: attempt to reconstruct each attack described above (seed brute-force, known-plaintext column recovery, frequency analysis, cross-release linkage, ciphertext-only correlation, weak-randomness exploitation, tamper injection) against the new design, and report for each whether it is fully mitigated, partially mitigated, or still possible, with reasoning.
+- Do not describe the final system as "unhackable" or "fully secure" in absolute terms. Instead, explicitly state which threat models are covered, which assumptions the security depends on (e.g. CSPRNG availability, correct nonce uniqueness, key rotation being followed operationally), and any residual limitations that remain regardless of algorithm design.
+
+DELIVERABLE:
+Create a markdown file named `newfile.md` in the project root documenting the updated algorithm, including:
+- A summary of each vulnerability above and exactly what was changed to address it
+- The full updated keystream/nonce/key derivation logic in detail
+- A worked example trace (same level of detail as the existing interactive guide) showing the new encryption/decryption process end-to-end for a sample value
+- A "Threat Model & Residual Risks" section listing what is now mitigated, what assumptions the security relies on, and any known remaining limitations or attack vectors — written precisely enough that it can be independently reviewed for further loopholes.
