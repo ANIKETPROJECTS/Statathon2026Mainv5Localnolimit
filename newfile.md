@@ -280,8 +280,8 @@ A 128-bit **export salt** is generated at the start of every `encryptFWFToBlob`
 call via `crypto.getRandomValues(new Uint8Array(16))`. It is:
 
 1. Stored in the CSV header: `# AIRAVATA-EXPORT-SALT: <32 hex chars>`.
-2. Mixed into every keystream IV via `makeCellKsBytesV2` (XOR with the first
-   32 bits of the salt).
+2. Mixed into every cell keystream IV via `makeCellKsBytesV2` — all 128 bits are
+   folded into the 64-bit PRNG state (seedA, seedB); see Correction B above.
 3. Mixed into the PBKDF2 salt for passphrase mode and into the master-seed
    folding for seed mode, so even the round keys differ across runs.
 4. Mixed into the alphanumeric-step key derivation.
@@ -413,17 +413,18 @@ interface AnonymizeAuditLog {
   timestamp: string;        // ISO-8601 — when the export was produced
   formatVersion: string;    // "v2"
   keyMode: string;          // "random" | "pbkdf2" | "hex"
-  keyFingerprint: string;   // first 8 hex chars only — confirms key identity
-                            //   without revealing usable key material
+  keyFingerprint: string;   // SHA-256("AIRAVATA-FINGERPRINT-v3\x00" || keyChain)
+                            //   truncated to 16 hex chars — zero key bits exposed;
+                            //   see Correction C for why the v2 approach was wrong
   exportSalt: string;       // full 128-bit salt (needed for decryption)
   columnsProcessed: string[]; // column names that were encrypted
-  cbcEnabled: boolean;      // always true for v2
-  hmacPresent: boolean;     // always true for v2
+  cbcEnabled: boolean;      // always true for v2+
+  hmacPresent: boolean;     // always true for v2+
 }
 ```
 
-The audit log contains **no plaintext values, no actual key material** (only the
-first 8 of 64 key hex chars as a fingerprint), and no column data. It is suitable
+The audit log contains **no plaintext values, no actual key material** (the fingerprint
+is a one-way SHA-256 hash — see Correction C), and no column data. It is suitable
 for writing to an append-only operations log alongside the anonymized file.
 
 ---
@@ -521,8 +522,12 @@ valueNonce[r] ← hashValueNonce(colBaseIV[r], cellValue)
       h ← h ⊕ (h >> 16)
     h ← (h × 0x85ebca6b) ⊕ (len(cellValue) × 0x9e3779b9) mod 2³²
 
-combined[r] ← parse32(roundKey[r][0..7]) ⊕ valueNonce[r] ⊕ exportSaltWord
-ksBytes[r]  ← xorshift128+(seed=combined[r]) → array of N bytes
+-- Fold all 128 bits of export salt into two independent 32-bit PRNG seeds (Correction B)
+seedA[r] ← parse32(roundKey[r][0..7]) ⊕ valueNonce[r]
+           ⊕ parse32(exportSalt[0..7]) ⊕ parse32(exportSalt[8..15])
+seedB[r] ← parse32(roundKey[r][8..15])
+           ⊕ parse32(exportSalt[16..23]) ⊕ parse32(exportSalt[24..31])
+ksBytes[r]  ← xorshift128+(seedA=seedA[r], seedB=seedB[r]) → array of N bytes
 ```
 
 #### Non-deterministic mode (per-row counter)
@@ -530,9 +535,12 @@ ksBytes[r]  ← xorshift128+(seed=combined[r]) → array of N bytes
 ```
 ivCounter[col] += 1   (separate counter per column, reset at start of run)
 columnSeed ← hashColIV(roundKey[0], columnName)
-combined[r] ← parse32(roundKey[r][0..7]) ⊕ (ivCounter ⊕ columnSeed ⊕ (r × 0x12345679))
-                                          ⊕ exportSaltWord
-ksBytes[r]  ← xorshift128+(seed=combined[r]) → array of N bytes
+-- Same full 128-bit salt folding as deterministic mode (Correction B)
+seedA[r] ← parse32(roundKey[r][0..7]) ⊕ (ivCounter ⊕ columnSeed ⊕ (r × 0x12345679))
+           ⊕ parse32(exportSalt[0..7]) ⊕ parse32(exportSalt[8..15])
+seedB[r] ← parse32(roundKey[r][8..15])
+           ⊕ parse32(exportSalt[16..23]) ⊕ parse32(exportSalt[24..31])
+ksBytes[r]  ← xorshift128+(seedA=seedA[r], seedB=seedB[r]) → array of N bytes
 ```
 
 ---
@@ -549,17 +557,21 @@ for charIdx = 0 to len(value)-1:
   ks0  ← ksBytes[r][ki] ⊕ (cbc & 0xFF)   -- CBC feedback into first ks byte
   ks1…4 ← ksBytes[r][ki+1…ki+4]          -- unchanged
 
+  rawKs4 ← ksBytes[r][ki + 4]      -- raw 5th byte; secret; captured before ki advances
+  for j in 0..4:
+    effectiveKs[j] ← ksBytes[r][ki+j] ⊕ rotl8(cbc, j)     -- rotl8 spread (Correction A)
+
   determine alphabet: digit(S=10), upper(S=26), lower(S=26),
                       symbol(S=33), leading-1..9 at pos-0 (S=9)
   v ← alphabet_index(ch)
   for i in 0..4:
-    v ← applyOpFwd(v, [ks0,ks1,ks2,ks3,ks4][i], S, muls[S])   -- encrypt
+    v ← applyOpFwd(v, effectiveKs[i], S, muls[S])   -- encrypt
     -- or for decrypt:
-    -- collect ks0…ks4 first, then:
-    -- for i in 4..0: v ← applyOpInv(v, [ks0..ks4][i], S, muls[S])
+    -- collect effectiveKs[0..4] first, then:
+    -- for i in 4..0: v ← applyOpInv(v, effectiveKs[i], S, muls[S])
 
   encChar ← alphabet_char(v)
-  cbc ← ((cbc << 3) ⊕ charCode(encChar)) & 0xFF   -- derive next feedback
+  cbc ← ((cbc << 3) ⊕ charCode(encChar) ⊕ rawKs4) & 0xFF   -- secret in feedback (Correction A)
   ki += 5
   emit encChar
 ```
@@ -682,10 +694,16 @@ valueNonce[0] = hashValueNonce(<IV0>, "AB")
   h ← (h × 0x85ebca6b) ⊕ (2 × 0x9e3779b9) mod 2³²   -- mix length=2
   → valueNonce[0] = <VN0>
 
-exportSaltWord = parse32("01020304") = 0x01020304
+-- Full 128-bit salt folding into two independent 32-bit seeds (Correction B)
+seedA = parse32(roundKey0[0..7]) ⊕ <VN0>
+          ⊕ parse32("01020304") ⊕ parse32("05060708")   -- salt words 0 and 1
+      = <seedA_value>
+seedB = parse32(roundKey0[8..15])
+          ⊕ parse32("090a0b0c") ⊕ parse32("0d0e0f10")   -- salt words 2 and 3
+      = <seedB_value>
 
-combined = parse32(roundKey0[0..7]) ⊕ <VN0> ⊕ 0x01020304
-ksBytes  = xorshift128+(seed=combined) → first 74 bytes (= 2 chars × 5 ops + 64 headroom)
+ksBytes  = xorshift128+(seedA=<seedA_value>, seedB=<seedB_value>)
+         → first 74 bytes (= 2 chars × 5 ops + 64 headroom)
 ```
 
 ---
@@ -696,11 +714,16 @@ ksBytes  = xorshift128+(seed=combined) → first 74 bytes (= 2 chars × 5 ops + 
 cbc ← 0
 
 -- 'A' is uppercase, alphabet size S=26, base=65, alphabet index v=0
-ks0 ← ksBytes[0] ⊕ (0 & 0xFF) = ksBytes[0]   (cbc=0, no effect on first char)
-ks1 ← ksBytes[1]
-ks2 ← ksBytes[2]
-ks3 ← ksBytes[3]
-ks4 ← ksBytes[4]
+
+-- Capture raw 5th byte before ki advances (secret; used in cbc update — Correction A)
+rawKs4 ← ksBytes[4]
+
+-- rotl8 spread across all 5 bytes (cbc=0, so rotl8(0,j)=0 — no effect on first char)
+ks0 ← ksBytes[0] ⊕ rotl8(0, 0) = ksBytes[0]
+ks1 ← ksBytes[1] ⊕ rotl8(0, 1) = ksBytes[1]
+ks2 ← ksBytes[2] ⊕ rotl8(0, 2) = ksBytes[2]
+ks3 ← ksBytes[3] ⊕ rotl8(0, 3) = ksBytes[3]
+ks4 ← ksBytes[4] ⊕ rotl8(0, 4) = ksBytes[4]
 
 op0: opType = ks0 % 4
      amount = floor(ks0/4) % 25 + 1
@@ -716,7 +739,9 @@ op4: (example: ks4=0x5D=93 → opType=1 → Sub(23+1=24) → v' = (prev - 24 + 2
 
 encChar_A = uppercase_char(v_final)   -- e.g. 'K'
 
-cbc ← ((0 << 3) ⊕ charCode('K')) & 0xFF = charCode('K') & 0xFF = 75
+-- cbc update mixes in rawKs4 (secret) so attacker cannot reproduce cbc from ciphertext
+cbc ← ((0 << 3) ⊕ charCode('K') ⊕ rawKs4) & 0xFF
+    = (charCode('K') ⊕ rawKs4) & 0xFF   -- e.g. 75 ⊕ rawKs4 = <cbc1>
 ki  ← 5
 ```
 
@@ -726,12 +751,20 @@ ki  ← 5
 
 ```
 -- 'B' is uppercase, v = 1
-ks0 ← ksBytes[5] ⊕ (75 & 0xFF) = ksBytes[5] ⊕ 75   -- CBC feedback applied
-ks1 ← ksBytes[6], ks2 ← ksBytes[7], ks3 ← ksBytes[8], ks4 ← ksBytes[9]
+-- cbc = <cbc1> (from Step 3 — unknown to attacker without the key)
+
+rawKs4 ← ksBytes[9]   -- raw 5th byte for this character (ki=5, ki+4=9)
+
+-- rotl8 across all 5 bytes: each byte j receives cbc rotated left by j positions
+ks0 ← ksBytes[5] ⊕ rotl8(<cbc1>, 0) = ksBytes[5] ⊕ <cbc1>
+ks1 ← ksBytes[6] ⊕ rotl8(<cbc1>, 1)
+ks2 ← ksBytes[7] ⊕ rotl8(<cbc1>, 2)
+ks3 ← ksBytes[8] ⊕ rotl8(<cbc1>, 3)
+ks4 ← ksBytes[9] ⊕ rotl8(<cbc1>, 4)
 
 (Apply 5 micro-ops with these effective ks bytes → encChar_B, e.g. 'R')
 
-cbc ← ((75 << 3) ⊕ charCode('R')) & 0xFF
+cbc ← ((<cbc1> << 3) ⊕ charCode('R') ⊕ rawKs4) & 0xFF
 ki  ← 10
 ```
 
@@ -755,8 +788,15 @@ For round 0, character `'K'` (charIdx=0):
 ```
 cbc ← 0
 
--- collect ks0..ks4 using same getKs formula:
-ks0 ← ksBytes[0] ⊕ (cbc & 0xFF) = ksBytes[0]   (cbc=0)
+-- Decryptor knows ksBytes (same key → same derivation), so rawKs4 is reproducible
+rawKs4 ← ksBytes[4]
+
+-- Same rotl8 getKs as encryption (cbc=0 → no effect on first char, same as Step 3)
+ks0 ← ksBytes[0] ⊕ rotl8(0, 0) = ksBytes[0]
+ks1 ← ksBytes[1] ⊕ rotl8(0, 1) = ksBytes[1]
+ks2 ← ksBytes[2] ⊕ rotl8(0, 2) = ksBytes[2]
+ks3 ← ksBytes[3] ⊕ rotl8(0, 3) = ksBytes[3]
+ks4 ← ksBytes[4] ⊕ rotl8(0, 4) = ksBytes[4]
 ks5 ← [ks0, ks1, ks2, ks3, ks4]
 
 -- apply inverse ops in reverse order:
@@ -768,13 +808,17 @@ v ← applyOpInv(v, ks5[1], 26, muls)   -- inverse of op1
 v ← applyOpInv(v, ks5[0], 26, muls)   -- inverse of op0
 → v = 0 → 'A'  ✓
 
--- CBC update uses the CIPHERTEXT input code = charCode('K')
-cbc ← ((0 << 3) ⊕ charCode('K')) & 0xFF = 75   (same as encryption)
+-- CBC update uses CIPHERTEXT input code and same rawKs4 secret → identical to encryption
+cbc ← ((0 << 3) ⊕ charCode('K') ⊕ rawKs4) & 0xFF = <cbc1>   (same as Step 3)
 ```
 
 For character `'R'` (charIdx=1):
 ```
-ks0 ← ksBytes[5] ⊕ 75   (same CBC value as encryption for this position)
+rawKs4 ← ksBytes[9]   -- same raw byte as Step 4
+
+-- same rotl8 spread using <cbc1>
+ks0 ← ksBytes[5] ⊕ rotl8(<cbc1>, 0)
+ks1 ← ksBytes[6] ⊕ rotl8(<cbc1>, 1), … ks4 ← ksBytes[9] ⊕ rotl8(<cbc1>, 4)
 -- apply inverse ops → v = 1 → 'B'  ✓
 ```
 
@@ -805,7 +849,7 @@ ks0 ← ksBytes[5] ⊕ 75   (same CBC value as encryption for this position)
 | Passphrase dictionary / brute force | **Substantially mitigated** | PBKDF2-SHA256 with ≥ 100 000 iterations + per-export salt raises cost by orders of magnitude vs. the original single-hash derivation. |
 | Known-plaintext column recovery via reused keystream | **Mitigated** | Per-value keystream: knowing `plaintext_1 ↔ ciphertext_1` reveals only the keystream for that value, not for any other value. |
 | Frequency analysis on deterministic columns | **Mitigated** | Per-value keystream ensures identical plaintexts produce identical ciphertext (determinism preserved), but different values have different keystreams so character-position histograms no longer reveal shift amounts. |
-| Per-character position attack | **Mitigated** | CBC diffusion means each character's encryption depends on all preceding ciphertext characters; attacking position i requires recovering positions 0…i−1 first. |
+| Per-character position attack | **Mitigated (corrected v3)** | CBC diffusion with `rotl8` spreads chaining across all 5 ks bytes; `rawKs4` (secret, key-derived) in the cbc update means an attacker cannot reconstruct the chaining state from ciphertext alone. Each character's effective keystream depends on all prior ciphertext **and** on secret key material. The v2 claim that ciphertext-only recovery was hard was false; this is now accurate. |
 | Cross-release record linkage | **Mitigated** | Per-export CSPRNG salt ensures ciphertext is completely different in every export run; two exports of the same dataset cannot be correlated by matching ciphertext. |
 | Tamper detection / integrity | **Mitigated** | HMAC-SHA256 with HKDF-derived key covers the full CSV body; any modification to the file after export is detected before decryption begins. |
 | Weak nonce / randomness | **Mitigated** | All nonce and salt material generated via `crypto.getRandomValues` (CSPRNG). xorshift128+ only used for key expansion from already-strong seeds. |
@@ -818,9 +862,12 @@ ks0 ← ksBytes[5] ⊕ 75   (same CBC value as encryption for this position)
    genuine CSPRNG. This holds in all modern browsers and Node.js ≥ 15, but not in
    non-standard environments that polyfill or shim the Web Crypto API insecurely.
 
-2. **Correct nonce uniqueness.** The export salt is 128 bits. The birthday bound
-   for a collision is approximately 2⁶⁴ independent exports. An organisation
-   performing more than ~10¹⁸ exports (effectively never) must use a larger salt.
+2. **Correct nonce uniqueness.** The export salt is 128 bits; all 128 bits are folded
+   into the per-cell keystream via a 64-bit PRNG state (seedA, seedB). The birthday
+   bound for a per-cell keystream collision is ~2³² independent exports (from the
+   64-bit PRNG state). This replaces the v2 claim of 2⁶⁴, which was false because
+   only 32 bits were used; it also replaces the v2 claim of 2¹⁶ that the actual code
+   delivered. 2³² export runs before a collision is far outside any realistic scenario.
 
 3. **Key rotation being followed operationally.** The cross-release protection
    assumes that each export run is initiated separately so a fresh CSPRNG salt is
