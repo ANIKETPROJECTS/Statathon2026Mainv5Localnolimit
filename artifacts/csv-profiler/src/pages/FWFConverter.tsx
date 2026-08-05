@@ -24,10 +24,10 @@ interface LayoutEntry {
   fileName: string;
   excelInfo: ExcelFileInfo | null;
   sheetSelectOpen: boolean;
-  selectedSheet: string;
+  selectedSheets: string[];   // multi-select — one layout entry created per sheet on confirm
   rowFrom: string;
   rowTo: string;
-  sheetRowCount: number;
+  sheetRowCount: number;      // row count of single selected sheet (0 when >1 selected)
   applyingSheet: boolean;
   result: ParseLayoutResult | null;
   error: string;
@@ -151,7 +151,7 @@ export default function FWFConverter() {
       const entry: LayoutEntry = {
         id: uid(), file, fileName: file.name,
         excelInfo: null, sheetSelectOpen: false,
-        selectedSheet: "", rowFrom: "", rowTo: "",
+        selectedSheets: [], rowFrom: "", rowTo: "",
         sheetRowCount: 0, applyingSheet: false, result: null, error: "",
       };
       setLayouts(prev => [...prev, entry]);
@@ -164,12 +164,14 @@ export default function FWFConverter() {
       } else {
         try {
           const info = await readExcelFileInfo(file);
-          const firstSheet = info.sheetNames[0];
+          // Pre-select all sheets so the user can deselect what they don't need
           patchLayout(setLayouts, entry.id, {
             excelInfo: info,
             sheetSelectOpen: true,
-            selectedSheet: firstSheet,
-            sheetRowCount: getSheetRowCount(info.buf, firstSheet),
+            selectedSheets: [...info.sheetNames],
+            sheetRowCount: info.sheetNames.length === 1
+              ? getSheetRowCount(info.buf, info.sheetNames[0])
+              : 0,
           });
         } catch (e) { patchLayout(setLayouts, entry.id, { error: `Read error: ${(e as Error).message}` }); }
       }
@@ -178,18 +180,45 @@ export default function FWFConverter() {
 
   const confirmSheet = useCallback(async (id: string) => {
     const lo = layouts.find(l => l.id === id);
-    if (!lo || !lo.selectedSheet) return;
+    if (!lo || lo.selectedSheets.length === 0) return;
     patchLayout(setLayouts, id, { applyingSheet: true, error: "" });
+
+    const [firstSheet, ...extraSheets] = lo.selectedSheets;
+    const rowOpts = {
+      startRow: lo.rowFrom ? parseInt(lo.rowFrom, 10) : undefined,
+      endRow:   lo.rowTo   ? parseInt(lo.rowTo,   10) : undefined,
+    };
+
+    // Parse the first selected sheet into the current entry
     try {
-      const result = await parseLayoutFile(lo.file, {
-        sheetName: lo.selectedSheet,
-        startRow: lo.rowFrom ? parseInt(lo.rowFrom, 10) : undefined,
-        endRow: lo.rowTo ? parseInt(lo.rowTo, 10) : undefined,
-      });
+      const result = await parseLayoutFile(lo.file, { sheetName: firstSheet, ...rowOpts });
       patchLayout(setLayouts, id, result.fields.length
         ? { result, sheetSelectOpen: false, applyingSheet: false }
         : { error: result.warnings.join(" ") || "No fields found.", applyingSheet: false });
-    } catch (e) { patchLayout(setLayouts, id, { error: `Parse error: ${(e as Error).message}`, applyingSheet: false }); }
+    } catch (e) {
+      patchLayout(setLayouts, id, { error: `Parse error: ${(e as Error).message}`, applyingSheet: false });
+      return; // Don't create extra entries if the first fails
+    }
+
+    // Parse each additional selected sheet as a new layout entry
+    for (const sheetName of extraSheets) {
+      const newEntry: LayoutEntry = {
+        id: uid(), file: lo.file, fileName: lo.fileName,
+        excelInfo: lo.excelInfo, sheetSelectOpen: false,
+        selectedSheets: [sheetName], rowFrom: lo.rowFrom, rowTo: lo.rowTo,
+        sheetRowCount: lo.excelInfo ? getSheetRowCount(lo.excelInfo.buf, sheetName) : 0,
+        applyingSheet: true, result: null, error: "",
+      };
+      setLayouts(prev => [...prev, newEntry]);
+      try {
+        const r = await parseLayoutFile(lo.file, { sheetName, ...rowOpts });
+        patchLayout(setLayouts, newEntry.id, r.fields.length
+          ? { result: r, applyingSheet: false }
+          : { error: r.warnings.join(" ") || "No fields found.", applyingSheet: false });
+      } catch (e) {
+        patchLayout(setLayouts, newEntry.id, { error: `Parse error: ${(e as Error).message}`, applyingSheet: false });
+      }
+    }
   }, [layouts]);
 
   const autoDetectSheet = useCallback(async (id: string) => {
@@ -208,12 +237,13 @@ export default function FWFConverter() {
   const addRange = useCallback((fromId: string) => {
     const src = layouts.find(l => l.id === fromId);
     if (!src?.excelInfo) return;
-    const firstSheet = src.excelInfo.sheetNames[0];
     const entry: LayoutEntry = {
       id: uid(), file: src.file, fileName: src.fileName,
       excelInfo: src.excelInfo, sheetSelectOpen: true,
-      selectedSheet: firstSheet, rowFrom: "", rowTo: "",
-      sheetRowCount: getSheetRowCount(src.excelInfo.buf, firstSheet),
+      selectedSheets: [...src.excelInfo.sheetNames], rowFrom: "", rowTo: "",
+      sheetRowCount: src.excelInfo.sheetNames.length === 1
+        ? getSheetRowCount(src.excelInfo.buf, src.excelInfo.sheetNames[0])
+        : 0,
       applyingSheet: false, result: null, error: "",
     };
     setLayouts(prev => [...prev, entry]);
@@ -446,10 +476,23 @@ export default function FWFConverter() {
                 <LayoutCard key={lo.id} lo={lo}
                   onConfirmSheet={() => confirmSheet(lo.id)}
                   onAutoDetect={() => autoDetectSheet(lo.id)}
-                  onSheetChange={sheet => patchLayout(setLayouts, lo.id, {
-                    selectedSheet: sheet,
-                    sheetRowCount: lo.excelInfo ? getSheetRowCount(lo.excelInfo.buf, sheet) : 0,
-                    rowFrom: "", rowTo: "",
+                  onSheetToggle={sheet => {
+                    const cur = lo.selectedSheets;
+                    const next = cur.includes(sheet) ? cur.filter(s => s !== sheet) : [...cur, sheet];
+                    patchLayout(setLayouts, lo.id, {
+                      selectedSheets: next,
+                      sheetRowCount: next.length === 1 && lo.excelInfo
+                        ? getSheetRowCount(lo.excelInfo.buf, next[0]) : 0,
+                    });
+                  }}
+                  onSelectAllSheets={() => patchLayout(setLayouts, lo.id, {
+                    selectedSheets: lo.excelInfo ? [...lo.excelInfo.sheetNames] : [],
+                    sheetRowCount: lo.excelInfo?.sheetNames.length === 1
+                      ? getSheetRowCount(lo.excelInfo.buf, lo.excelInfo.sheetNames[0]) : 0,
+                  })}
+                  onDeselectAllSheets={() => patchLayout(setLayouts, lo.id, {
+                    selectedSheets: [],
+                    sheetRowCount: 0,
                   })}
                   onRangeChange={(from, to) => patchLayout(setLayouts, lo.id, { rowFrom: from, rowTo: to })}
                   onAddRange={() => addRange(lo.id)}
@@ -718,11 +761,13 @@ export default function FWFConverter() {
 
 // ── LayoutCard ────────────────────────────────────────────────────────────────
 
-function LayoutCard({ lo, onConfirmSheet, onAutoDetect, onSheetChange, onRangeChange, onAddRange, onRemove }: {
+function LayoutCard({ lo, onConfirmSheet, onAutoDetect, onSheetToggle, onSelectAllSheets, onDeselectAllSheets, onRangeChange, onAddRange, onRemove }: {
   lo: LayoutEntry;
   onConfirmSheet: () => void;
   onAutoDetect: () => void;
-  onSheetChange: (sheet: string) => void;
+  onSheetToggle: (sheet: string) => void;
+  onSelectAllSheets: () => void;
+  onDeselectAllSheets: () => void;
   onRangeChange: (from: string, to: string) => void;
   onAddRange: () => void;
   onRemove: () => void;
@@ -781,55 +826,96 @@ function LayoutCard({ lo, onConfirmSheet, onAutoDetect, onSheetChange, onRangeCh
         </div>
       )}
 
-      {/* Sheet selector (inline) */}
-      {lo.sheetSelectOpen && lo.excelInfo && (
-        <div className="p-4 space-y-4 border-t border-gray-100 bg-white">
-          <InfoBadge icon={<FileSpreadsheet className="w-4 h-4" />} text={`${lo.excelInfo.sheetNames.length} sheets found — select one`} />
-
-          <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1">
-            {lo.excelInfo.sheetNames.map(name => (
-              <label key={name} className={`flex items-center gap-3 px-3 py-2 rounded-xl border cursor-pointer text-sm transition-colors ${lo.selectedSheet === name ? "border-blue-500 bg-blue-50 text-black" : "border-gray-200 hover:border-blue-300 text-gray-500"}`}>
-                <input type="radio" name={`sheet-${lo.id}`} value={name} checked={lo.selectedSheet === name} onChange={() => onSheetChange(name)} className="accent-blue-600" />
-                <span className="font-medium truncate">{name}</span>
-              </label>
-            ))}
-          </div>
-
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <p className="text-sm font-semibold text-black">Row range {lo.sheetRowCount > 0 && <span className="font-normal text-gray-500">({lo.sheetRowCount} rows)</span>}</p>
-              {(lo.rowFrom || lo.rowTo) && (
-                <button onClick={() => onRangeChange("", "")} className="text-sm text-gray-400 hover:text-black flex items-center gap-1">
-                  <RotateCcw className="w-3 h-3" />All rows
-                </button>
-              )}
+      {/* Sheet selector (inline) — multi-select */}
+      {lo.sheetSelectOpen && lo.excelInfo && (() => {
+        const allSheets = lo.excelInfo.sheetNames;
+        const sel = lo.selectedSheets;
+        const allSelected = sel.length === allSheets.length;
+        const noneSelected = sel.length === 0;
+        return (
+          <div className="p-4 space-y-4 border-t border-gray-100 bg-white">
+            {/* Header: badge + select-all toggle */}
+            <div className="flex items-center justify-between gap-2">
+              <InfoBadge
+                icon={<FileSpreadsheet className="w-4 h-4" />}
+                text={`${allSheets.length} sheet${allSheets.length !== 1 ? "s" : ""} found — ${sel.length} selected`}
+              />
+              <button
+                onClick={() => allSelected ? onDeselectAllSheets() : onSelectAllSheets()}
+                className="text-xs text-blue-600 hover:text-blue-800 font-medium whitespace-nowrap"
+              >
+                {allSelected ? "Deselect all" : "Select all"}
+              </button>
             </div>
-            <div className="flex gap-3">
-              {[{ label: "From", val: lo.rowFrom, ph: "1" }, { label: "To", val: lo.rowTo, ph: lo.sheetRowCount ? String(lo.sheetRowCount) : "last" }].map(({ label, val, ph }, i) => (
-                <div key={i} className="flex-1 space-y-1">
-                  <p className="text-xs text-gray-500">{label} row</p>
-                  <input type="number" min={1} placeholder={ph} value={val}
-                    onChange={e => onRangeChange(i === 0 ? e.target.value : lo.rowFrom, i === 1 ? e.target.value : lo.rowTo)}
-                    className="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 text-black" />
-                </div>
-              ))}
+
+            {/* Checkbox list */}
+            <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1">
+              {allSheets.map(name => {
+                const checked = sel.includes(name);
+                return (
+                  <label key={name} className={`flex items-center gap-3 px-3 py-2 rounded-xl border cursor-pointer text-sm transition-colors ${checked ? "border-blue-500 bg-blue-50 text-black" : "border-gray-200 hover:border-blue-300 text-gray-500"}`}>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => onSheetToggle(name)}
+                      className="accent-blue-600 w-4 h-4 flex-shrink-0 rounded"
+                    />
+                    <span className="font-medium truncate">{name}</span>
+                    {checked && sel.length === 1 && lo.sheetRowCount > 0 && (
+                      <span className="ml-auto text-xs text-gray-400 flex-shrink-0">{lo.sheetRowCount} rows</span>
+                    )}
+                  </label>
+                );
+              })}
+            </div>
+
+            {/* Row range — shown for all selections; note added for multi */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-semibold text-black">
+                  Row range
+                  {sel.length === 1 && lo.sheetRowCount > 0 && (
+                    <span className="font-normal text-gray-500 ml-1">({lo.sheetRowCount} rows)</span>
+                  )}
+                  {sel.length > 1 && (
+                    <span className="font-normal text-gray-400 ml-1 text-xs">· applies to all selected sheets</span>
+                  )}
+                </p>
+                {(lo.rowFrom || lo.rowTo) && (
+                  <button onClick={() => onRangeChange("", "")} className="text-sm text-gray-400 hover:text-black flex items-center gap-1">
+                    <RotateCcw className="w-3 h-3" />All rows
+                  </button>
+                )}
+              </div>
+              <div className="flex gap-3">
+                {[{ label: "From", val: lo.rowFrom, ph: "1" }, { label: "To", val: lo.rowTo, ph: sel.length === 1 && lo.sheetRowCount ? String(lo.sheetRowCount) : "last" }].map(({ label, val, ph }, i) => (
+                  <div key={i} className="flex-1 space-y-1">
+                    <p className="text-xs text-gray-500">{label} row</p>
+                    <input type="number" min={1} placeholder={ph} value={val}
+                      onChange={e => onRangeChange(i === 0 ? e.target.value : lo.rowFrom, i === 1 ? e.target.value : lo.rowTo)}
+                      className="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 text-black" />
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {lo.error && <ErrorBox message={lo.error} />}
+
+            <div className="flex gap-2">
+              <button onClick={onConfirmSheet} disabled={lo.applyingSheet || noneSelected}
+                className="flex-1 flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl bg-black text-white text-sm font-semibold hover:bg-gray-800 disabled:opacity-50 transition-colors">
+                {lo.applyingSheet
+                  ? <><Spin />Parsing…</>
+                  : <><ArrowRight className="w-3.5 h-3.5" />Use selected sheet{sel.length > 1 ? `s (${sel.length})` : ""}</>}
+              </button>
+              <button onClick={onAutoDetect} disabled={lo.applyingSheet}
+                className="px-3 py-2.5 rounded-xl border border-gray-200 text-sm text-gray-500 hover:text-black hover:border-gray-400 disabled:opacity-50 transition-colors whitespace-nowrap">
+                Auto-detect
+              </button>
             </div>
           </div>
-
-          {lo.error && <ErrorBox message={lo.error} />}
-
-          <div className="flex gap-2">
-            <button onClick={onConfirmSheet} disabled={lo.applyingSheet || !lo.selectedSheet}
-              className="flex-1 flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl bg-black text-white text-sm font-semibold hover:bg-gray-800 disabled:opacity-50 transition-colors">
-              {lo.applyingSheet ? <><Spin />Parsing…</> : <><ArrowRight className="w-3.5 h-3.5" />Use selected sheet</>}
-            </button>
-            <button onClick={onAutoDetect} disabled={lo.applyingSheet}
-              className="px-3 py-2.5 rounded-xl border border-gray-200 text-sm text-gray-500 hover:text-black hover:border-gray-400 disabled:opacity-50 transition-colors whitespace-nowrap">
-              Auto-detect
-            </button>
-          </div>
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 }
