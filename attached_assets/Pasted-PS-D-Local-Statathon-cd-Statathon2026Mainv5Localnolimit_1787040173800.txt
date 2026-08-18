@@ -1,0 +1,52 @@
+PS D:\Local Statathon> cd .\Statathon2026Mainv5Localnolimit\
+PS D:\Local Statathon\Statathon2026Mainv5Localnolimit> git pull
+remote: Enumerating objects: 14, done.
+remote: Counting objects: 100% (14/14), done.
+remote: Compressing objects: 100% (3/3), done.
+remote: Total 8 (delta 5), reused 8 (delta 5), pack-reused 0 (from 0)
+Unpacking objects: 100% (8/8), 252.59 KiB | 4.68 MiB/s, done.
+From https://github.com/ANIKETPROJECTS/Statathon2026Mainv5Localnolimit
+   7a6a9c6..e7c08b4  main       -> origin/main
+Updating 7a6a9c6..e7c08b4
+Fast-forward
+ artifacts/desktop/main.cjs              |  16 ++++++++++++++-- 
+ artifacts/desktop/package.json          |   2 +-
+ attached_assets/image_1787040080364.png | Bin 0 -> 275069 bytes
+ 3 files changed, 15 insertions(+), 3 deletions(-)
+ create mode 100644 attached_assets/image_1787040080364.png     
+PS D:\Local Statathon\Statathon2026Mainv5Localnolimit> pnpm desktop:dev
+
+> workspace@0.0.0 desktop:dev D:\Local Statathon\Statathon2026Mainv5Localnolimit
+> pnpm --filter @workspace/csv-profiler-desktop run dev:with-web
+
+
+> @workspace/csv-profiler-desktop@1.0.0 dev:with-web D:\Local Statathon\Statathon2026Mainv5Localnolimit\artifacts\desktop    
+> concurrently -k "pnpm --filter @workspace/csv-profiler run dev" "wait-on tcp:5000 && pnpm exec electron . --enable-logging"
+
+[0] 
+[0] > @workspace/csv-profiler@0.0.0 dev D:\Local Statathon\Statathon2026Mainv5Localnolimit\artifacts\csv-profiler
+[0] > pnpm --filter @workspace/api-server run dev & vite --config vite.config.ts --host 0.0.0.0
+[0]
+[0] 
+[0] > @workspace/api-server@0.0.0 dev D:\Local Statathon\Statathon2026Mainv5Localnolimit\artifacts\api-server
+[0] > node ./scripts/dev.cjs
+[0]
+[0] 
+[0]   dist\index.mjs                   1.4mb
+[0]   dist\pino-worker.mjs           153.5kb
+[0]   dist\pino-file.mjs             142.1kb
+[0]   dist\pino-pretty.mjs           114.6kb
+[0]   dist\thread-stream-worker.mjs    7.3kb
+[0]   ...and 5 more output files...
+[0]
+[0] Done in 393ms
+[0] [13:32:40.560] INFO (17520): Server listening
+[0]     port: 3001
+[1] ^CTerminate batch job (Y/N)? 
+[0] Terminate batch job (Y/N)?
+PS D:\Local Statathon\Statathon2026Mainv5Localnolimit>
+[1] wait-on tcp:5000 && pnpm exec electron . --enable-logging exited with code 1
+--> Sending SIGTERM to other processes..
+[0] pnpm --filter @workspace/csv-profiler run dev exited with code 1
+                                                       ^C
+PS D:\Local Statathon\Statathon2026Mainv5Localnolimit>
