@@ -1,0 +1,74 @@
+The Windows Electron application builds successfully, but the packaged production application opens to a completely white screen.
+
+Current status:
+
+* `pnpm desktop:dev` works correctly.
+* The application UI loads normally when running through VS Code/development mode.
+* `pnpm desktop:build:web` completes successfully.
+* `pnpm desktop:build` completes successfully.
+* Electron Builder successfully creates:
+  `artifacts/desktop/release/AIRAVATA DEA CSV Profiler Setup 1.0.0.exe`
+* Running the packaged Electron executable from `release/win-unpacked` opens the Electron window, but the entire renderer area remains white.
+* There is no visible React UI in the packaged application.
+
+Build output confirms the frontend is generated successfully:
+
+```text
+dist/public/index.html
+dist/public/assets/index-CvEN69mN.css
+dist/public/assets/index-MJBdATlr.js
+✓ built in 13.30s
+```
+
+Please investigate the difference between development mode and the packaged production Electron mode and fix the white-screen issue.
+
+Check all of the following:
+
+1. Verify exactly how the Electron main process loads the frontend in development versus production.
+2. Verify that the packaged Electron app points to the correct built frontend location.
+3. Verify whether the React/Vite output is inside the packaged application/ASAR.
+4. Check Vite `base` configuration and whether generated JS/CSS/image paths work when loaded through Electron's production environment.
+5. Check `file://`, `app://`, or any custom protocol handling used by Electron.
+6. Check whether the production renderer is failing because of incorrect relative/absolute asset paths.
+7. Check preload configuration, `contextIsolation`, sandbox settings, and Electron security settings.
+8. Add production diagnostics so that the real renderer error is visible, including:
+
+   * `did-fail-load`
+   * `console-message`
+   * `render-process-gone`
+   * failed resource/request logging
+9. Verify whether the renderer is attempting to load the development URL `http://127.0.0.1:5000` after packaging. It must not depend on the development Vite server.
+10. Verify that the packaged app does not accidentally depend on files that exist only in the repository/development environment.
+11. Preserve the existing UI and functionality exactly as it works in `pnpm desktop:dev`.
+12. Do not replace the Electron desktop architecture with a browser-only solution.
+13. Keep the solution compatible with Windows and Linux/macOS.
+
+Most importantly, reproduce the issue using the actual packaged executable:
+
+```text
+artifacts/desktop/release/win-unpacked/AIRAVATA DEA CSV Profiler.exe
+```
+
+Then determine the exact reason the renderer is blank and fix the root cause rather than adding a temporary workaround.
+
+After making the fix, verify both:
+
+```powershell
+pnpm desktop:dev
+```
+
+and:
+
+```powershell
+pnpm desktop:build:web
+pnpm desktop:build
+```
+
+Then run the newly generated `.exe` and confirm that the full React application appears exactly like the development version.
+
+Please report:
+
+* the exact root cause of the white screen,
+* the files changed,
+* what was changed,
+* and how the production Electron app now loads the frontend.

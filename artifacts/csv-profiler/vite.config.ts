@@ -9,7 +9,12 @@ const port = rawPort && !Number.isNaN(Number(rawPort)) && Number(rawPort) > 0
   ? Number(rawPort)
   : 5000;
 
-const basePath = process.env.BASE_PATH ?? "/";
+// Packaged Electron loads index.html through file://, so production assets
+// must be relative to that HTML file rather than rooted at /.
+const isProductionBuild =
+  process.env.NODE_ENV === "production" || process.argv.includes("build");
+const basePath =
+  process.env.BASE_PATH ?? (isProductionBuild ? "./" : "/");
 
 export default defineConfig({
   base: basePath,

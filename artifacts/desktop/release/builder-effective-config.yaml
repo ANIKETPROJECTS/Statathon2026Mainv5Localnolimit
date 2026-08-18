@@ -1,0 +1,17 @@
+directories:
+  output: release
+  buildResources: build
+appId: com.airavata.dea.csvprofiler
+productName: AIRAVATA DEA CSV Profiler
+files:
+  - filter:
+      - main.cjs
+      - preload.cjs
+extraResources:
+  - from: ../csv-profiler/dist/public
+    to: csv-profiler
+mac:
+  target: dmg
+win:
+  target: nsis
+electronVersion: 38.8.6
