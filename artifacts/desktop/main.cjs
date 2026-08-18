@@ -10,6 +10,7 @@ function createWindow() {
     minWidth: 1024,
     minHeight: 700,
     title: "AIRAVATA DEA — CSV Data Profiler",
+    show: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
@@ -18,8 +19,19 @@ function createWindow() {
   });
 
   const devUrl = process.env.DESKTOP_DEV_URL || "http://127.0.0.1:5000";
-  if (!app.isPackaged) mainWindow.loadURL(devUrl);
-  else mainWindow.loadFile(path.join(process.resourcesPath, "csv-profiler", "index.html"));
+  mainWindow.on("ready-to-show", () => mainWindow.show());
+  mainWindow.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL) => {
+    console.error(`Electron failed to load ${validatedURL}: ${errorCode} ${errorDescription}`);
+  });
+  if (!app.isPackaged) {
+    mainWindow.loadURL(devUrl).catch((error) => {
+      console.error("Electron could not load the development frontend:", error);
+    });
+  } else {
+    mainWindow.loadFile(path.join(process.resourcesPath, "csv-profiler", "index.html")).catch((error) => {
+      console.error("Electron could not load the packaged frontend:", error);
+    });
+  }
 }
 
 ipcMain.handle("choose-output-folder", async () => {
