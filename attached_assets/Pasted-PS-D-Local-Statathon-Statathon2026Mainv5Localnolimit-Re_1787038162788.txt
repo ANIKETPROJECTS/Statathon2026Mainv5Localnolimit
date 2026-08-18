@@ -1,0 +1,59 @@
+PS D:\Local Statathon\Statathon2026Mainv5Localnolimit> Remove-Item -Recurse -Force node_modules -ErrorAction SilentlyContinue
+PS D:\Local Statathon\Statathon2026Mainv5Localnolimit> pnpm install
+Scope: all 10 workspace projects
+Lockfile is up to date, resolution step is skipped
+Packages: +736
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++  
+Progress: resolved 736, reused 735, downloaded 1, added 736, done
+
+devDependencies:  
++ prettier 3.8.3  
++ typescript 5.9.3
+
+. preinstall$ node scripts/check-pnpm.cjs
+└─ Done in 76ms
+Done in 14.2s using pnpm v10.26.1
+PS D:\Local Statathon\Statathon2026Mainv5Localnolimit> pnpm desktop:dev
+
+> workspace@0.0.0 desktop:dev D:\Local Statathon\Statathon2026Mainv5Localnolimit
+> pnpm --filter @workspace/csv-profiler-desktop run dev:with-web
+
+
+> @workspace/csv-profiler-desktop@1.0.0 dev:with-web D:\Local Statathon\Statathon2026Mainv5Localnolimit\artifacts\desktop
+> concurrently -k "pnpm --filter @workspace/csv-profiler run dev" "wait-on http://127.0.0.1:5000 && electron ."
+
+[0] 
+[0] > @workspace/csv-profiler@0.0.0 dev D:\Local Statathon\Statathon2026Mainv5Localnolimit\artifacts\csv-profiler
+[0] > pnpm --filter @workspace/api-server run dev & vite --config vite.config.ts --host 0.0.0.0
+[0]
+[0] 
+[0] > @workspace/api-server@0.0.0 dev D:\Local Statathon\Statathon2026Mainv5Localnolimit\artifacts\api-server
+[0] > node ./scripts/dev.cjs
+[0]
+[0] D:\Local Statathon\Statathon2026Mainv5Localnolimit\artifacts\api-server:
+[0]  ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @workspace/api-server@0.0.0 dev: `node ./scripts/dev.cjs`
+[0] Exit status 1
+[0] failed to load config from D:\Local Statathon\Statathon2026Mainv5Localnolimit\artifacts\csv-profiler\vite.config.ts
+[0] error when starting dev server:
+[0] Error: Cannot find native binding. npm has a bug related to optional dependencies (https://github.com/npm/cli/issues/4828). Please try `npm i` again after removing both package-lock.json and node_modules directory.
+[0]     at Object.<anonymous> (D:\Local Statathon\Statathon2026Mainv5Localnolimit\node_modules\.pnpm\@tailwindcss+oxide@4.3.0\node_modules\@tailwindcss\oxide\index.js:563:11)
+[0]     at Module._compile (node:internal/modules/cjs/loader:1554:14)
+[0]     at Object..js (node:internal/modules/cjs/loader:1706:10)
+[0]     at Module.load (node:internal/modules/cjs/loader:1289:32)
+[0]     at Function._load (node:internal/modules/cjs/loader:1108:12)
+[0]     at TracingChannel.traceSync (node:diagnostics_channel:322:14)
+[0]     at wrapModuleLoad (node:internal/modules/cjs/loader:220:24)
+[0]     at cjsLoader (node:internal/modules/esm/translators:262:5)
+[0]     at ModuleWrap.<anonymous> (node:internal/modules/esm/translators:196:7)
+[0]     at ModuleJob.run (node:internal/modules/esm/module_job:271:25)
+[0] D:\Local Statathon\Statathon2026Mainv5Localnolimit\artifacts\csv-profiler:
+[0]  ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @workspace/csv-profiler@0.0.0 dev: `pnpm --filter @workspace/api-server run dev & vite --config vite.config.ts --host 0.0.0.0`
+[0] Exit status 1
+[0] pnpm --filter @workspace/csv-profiler run dev exited with code 1
+--> Sending SIGTERM to other processes..
+[1] wait-on http://127.0.0.1:5000 && electron . exited with code 1
+D:\Local Statathon\Statathon2026Mainv5Localnolimit\artifacts\desktop:
+ ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @workspace/csv-profiler-desktop@1.0.0 dev:with-web: `concurrently -k "pnpm --filter @workspace/csv-profiler run dev" "wait-on http://127.0.0.1:5000 && electron ."`
+Exit status 1
+ ELIFECYCLE  Command failed with exit code 1.
+PS D:\Local Statathon\Statathon2026Mainv5Localnolimit> 
