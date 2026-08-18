@@ -1,0 +1,59 @@
+I am testing the project locally on Windows 11 using VS Code PowerShell and pnpm 10.26.1.
+
+The previous Windows compatibility issues have been fixed:
+
+* `pnpm install` completes successfully.
+* The Unix `export` command in the API startup script was replaced.
+* Rollup's Windows native dependency issue was fixed.
+* Tailwind CSS native binding is now working.
+* Vite starts successfully.
+
+Current command:
+
+```powershell
+pnpm desktop:dev
+```
+
+The frontend starts correctly:
+
+```text
+VITE v7.3.3 ready
+Local: http://localhost:5000/
+Network: http://192.168.1.106:5000/
+```
+
+However, the API server fails immediately:
+
+```text
+@workspace/api-server@0.0.0 dev
+> node ./scripts/dev.cjs
+
+ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL
+@workspace/api-server@0.0.0 dev: `node ./scripts/dev.cjs`
+Exit status 1
+```
+
+Running the API directly produces the same result:
+
+```powershell
+cd .\artifacts\api-server
+node .\scripts\dev.cjs
+```
+
+It exits with code 1 without displaying the underlying error.
+
+Please inspect the API server's `scripts/dev.cjs` and the related API startup/build files and fix the root cause.
+
+Requirements:
+
+* Make the API server start correctly on Windows PowerShell.
+* Preserve the existing API architecture and functionality.
+* Keep compatibility with Linux/macOS.
+* Do not hide or swallow startup errors.
+* Make sure `pnpm --filter @workspace/api-server run dev` starts the API successfully.
+* Make sure `pnpm desktop:dev` can start both the API and Vite frontend and then launch Electron.
+* Do not remove required API functionality or replace the API with a mock/server workaround.
+* Check for any Windows-incompatible commands, environment-variable handling, path handling, child-process handling, or scripts that could cause `dev.cjs` to exit with code 1.
+* Verify the fix by actually running the API development command and, where possible, the full `pnpm desktop:dev` workflow.
+
+After fixing the issue, list the files changed and explain briefly what was changed so I can pull the commit into my local Windows environment.
