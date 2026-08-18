@@ -76,6 +76,32 @@ type AnonMode = "encrypt" | "decrypt";
 
 function uid() { return Math.random().toString(36).slice(2, 10); }
 
+function parseCSVLine(line: string): string[] {
+  const cells: string[] = [];
+  let cur = "";
+  let inQ = false;
+  for (const ch of line) {
+    if (ch === '"') inQ = !inQ;
+    else if (ch === "," && !inQ) { cells.push(cur); cur = ""; }
+    else cur += ch;
+  }
+  cells.push(cur);
+  return cells;
+}
+
+/** Read AIRAVATA CSV exports without treating format metadata as data rows. */
+function parseExportCSV(text: string): { headers: string[]; rows: string[][] } {
+  const lines = text.split(/\r?\n/).filter(line => line.trim().length > 0);
+  const headerIndex = lines.findIndex(line => !line.trimStart().startsWith("#"));
+  if (headerIndex < 0) return { headers: [], rows: [] };
+  return {
+    headers: parseCSVLine(lines[headerIndex]),
+    rows: lines.slice(headerIndex + 1)
+      .filter(line => !line.trimStart().startsWith("#"))
+      .map(parseCSVLine),
+  };
+}
+
 function triggerDownload(blob: Blob, name: string) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -420,13 +446,7 @@ export default function FWFConverter() {
         lo.result!.fields.map(f => line.padEnd(f.end).substring(f.start - 1, f.end).trim())
       );
       const anonText = await df.encResultBlob.text();
-      const anonLines = anonText.split(/\r?\n/).filter(l => l.length > 0);
-      const parseCSVLine = (line: string): string[] => {
-        const cells: string[] = []; let cur = ""; let inQ = false;
-        for (const ch of line) { if (ch === '"') { inQ = !inQ; } else if (ch === "," && !inQ) { cells.push(cur); cur = ""; } else { cur += ch; } }
-        cells.push(cur); return cells;
-      };
-      const anonymized = anonLines.slice(1, MAX + 1).map(parseCSVLine);
+      const anonymized = parseExportCSV(anonText).rows.slice(0, MAX);
       setCompareData({ headers, original, anonymized });
     } finally { setCompareLoading(false); }
   };
@@ -458,17 +478,11 @@ export default function FWFConverter() {
     setDecryptCompareLoading(true); setShowDecryptCompare(true);
     try {
       const MAX = 500;
-      const parseCSVLine = (line: string): string[] => {
-        const cells: string[] = []; let cur = ""; let inQ = false;
-        for (const ch of line) { if (ch === '"') { inQ = !inQ; } else if (ch === "," && !inQ) { cells.push(cur); cur = ""; } else { cur += ch; } }
-        cells.push(cur); return cells;
-      };
-      const encLines = decryptCsvText.split(/\r?\n/).filter(l => l.trim().length > 0);
-      const headers = parseCSVLine(encLines[0]);
-      const original = encLines.slice(1, MAX + 1).map(parseCSVLine);
+      const encrypted = parseExportCSV(decryptCsvText);
+      const headers = encrypted.headers;
+      const original = encrypted.rows.slice(0, MAX);
       const decText = await decryptBlob.text();
-      const decLines = decText.split(/\r?\n/).filter(l => l.trim().length > 0);
-      const anonymized = decLines.slice(1, MAX + 1).map(parseCSVLine);
+      const anonymized = parseExportCSV(decText).rows.slice(0, MAX);
       setDecryptCompareData({ headers, original, anonymized });
     } finally { setDecryptCompareLoading(false); }
   }, [decryptCsvText, decryptBlob]);
