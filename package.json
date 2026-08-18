@@ -7,7 +7,10 @@
     "build": "pnpm run typecheck && pnpm -r --if-present run build",
     "typecheck:libs": "tsc --build",
     "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck",
-    "test:anonymize": "node node_modules/.pnpm/tsx@4.21.0/node_modules/tsx/dist/cli.mjs scripts/anonymize-smoke.mts"
+    "test:anonymize": "node node_modules/.pnpm/tsx@4.21.0/node_modules/tsx/dist/cli.mjs scripts/anonymize-smoke.mts",
+    "desktop:dev": "pnpm --filter @workspace/csv-profiler-desktop run dev:with-web",
+    "desktop:build:web": "pnpm --filter @workspace/csv-profiler-desktop run build:web",
+    "desktop:build": "pnpm --filter @workspace/csv-profiler-desktop run build"
   },
   "private": true,
   "devDependencies": {
