@@ -5,7 +5,7 @@
   "main": "main.cjs",
   "scripts": {
     "dev": "electron .",
-    "dev:with-web": "concurrently -k \"pnpm --filter @workspace/csv-profiler run dev\" \"wait-on http://127.0.0.1:5000 && electron .\"",
+    "dev:with-web": "concurrently -k \"pnpm --filter @workspace/csv-profiler run dev\" \"wait-on http://127.0.0.1:5000 && pnpm exec electron .\"",
     "build:web": "pnpm --filter @workspace/csv-profiler run build",
     "build": "electron-builder"
   },
