@@ -9,6 +9,34 @@ import InfoPage from "@/pages/Info";
 import RiskAssessmentSingle, { pageCache } from "@/pages/RiskAssessmentSingle";
 import RiskAssessmentComparison from "@/pages/RiskAssessmentComparison";
 import { EncryptionSettingsProvider, useEncryptionSettings } from "@/lib/encryption-settings-context";
+import { Component, type ErrorInfo, type ReactNode } from "react";
+
+class AppErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state = { error: null as Error | null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error("AIRAVATA renderer error:", error, info.componentStack);
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="m-8 rounded-xl border border-red-200 bg-red-50 p-6 text-red-900">
+          <h1 className="text-lg font-semibold">The application could not render this section.</h1>
+          <p className="mt-2 whitespace-pre-wrap text-sm">{this.state.error.message}</p>
+          <p className="mt-4 text-xs text-red-700">
+            Restart the application after rebuilding it. This message replaces the blank screen with the actual renderer error.
+          </p>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -182,13 +210,19 @@ function RiskAssessmentLanding({ navigate }: { navigate: (to: string) => void })
 }
 
 function App() {
+  const routerBase = import.meta.env.BASE_URL === "./"
+    ? ""
+    : import.meta.env.BASE_URL.replace(/\/$/, "");
+
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <EncryptionSettingsProvider>
-          <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
-            <AppLayout />
-          </WouterRouter>
+          <AppErrorBoundary>
+            <WouterRouter base={routerBase}>
+              <AppLayout />
+            </WouterRouter>
+          </AppErrorBoundary>
           <Toaster />
         </EncryptionSettingsProvider>
       </TooltipProvider>
