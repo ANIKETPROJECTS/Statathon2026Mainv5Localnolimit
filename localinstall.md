@@ -83,6 +83,8 @@ This installs:
 - Electron Builder
 - The desktop development helpers
 
+The install check is implemented in Node.js, so it works from PowerShell, Command Prompt, macOS Terminal, and Linux shells. It also removes accidental `package-lock.json` and `yarn.lock` files and rejects npm/yarn installs.
+
 Do not run `npm install` or `yarn install` in this project. It is a pnpm workspace.
 
 ## 4. Start the desktop application
