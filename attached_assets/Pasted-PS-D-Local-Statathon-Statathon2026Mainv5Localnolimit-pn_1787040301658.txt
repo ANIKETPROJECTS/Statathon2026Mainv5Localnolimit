@@ -1,0 +1,45 @@
+PS D:\Local Statathon\Statathon2026Mainv5Localnolimit> pnpm desktop:dev
+
+> workspace@0.0.0 desktop:dev D:\Local Statathon\Statathon2026Mainv5Localnolimit
+> pnpm --filter @workspace/csv-profiler-desktop run dev:with-web
+
+
+> @workspace/csv-profiler-desktop@1.0.0 dev:with-web D:\Local Statathon\Statathon2026Mainv5Localnolimit\artifacts\desktop    
+> concurrently -k "pnpm --filter @workspace/csv-profiler run dev" "wait-on tcp:5000 && pnpm exec electron . --enable-logging"
+
+[0] 
+[0] > @workspace/csv-profiler@0.0.0 dev D:\Local Statathon\Statathon2026Mainv5Localnolimit\artifacts\csv-profiler
+[0] > node ./scripts/dev.cjs
+[0]
+[0] node:internal/child_process:420
+[0]     throw new ErrnoException(err, 'spawn');
+[0]     ^
+[0]
+[0] Error: spawn EINVAL
+[0]     at ChildProcess.spawn (node:internal/child_process:420:11)
+[0]     at spawn (node:child_process:753:9)
+[0]     at Object.<anonymous> (D:\Local Statathon\Statathon2026Mainv5Localnolimit\artifacts\csv-profiler\scripts\dev.cjs:11:3)
+[0]     at Module._compile (node:internal/modules/cjs/loader:1554:14)
+[0]     at Object..js (node:internal/modules/cjs/loader:1706:10)
+[0]     at Module.load (node:internal/modules/cjs/loader:1289:32)
+[0]     at Function._load (node:internal/modules/cjs/loader:1108:12)
+[0]     at TracingChannel.traceSync (node:diagnostics_channel:322:14)
+[0]     at wrapModuleLoad (node:internal/modules/cjs/loader:220:24)
+[0]     at Function.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:170:5) {
+[0]   errno: -4071,
+[0]   code: 'EINVAL',
+[0]   syscall: 'spawn'
+[0] }
+[0]
+[0] Node.js v22.14.0
+[0] D:\Local Statathon\Statathon2026Mainv5Localnolimit\artifacts\csv-profiler:
+[0]  ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @workspace/csv-profiler@0.0.0 dev: `node ./scripts/dev.cjs`
+[0] Exit status 1
+[0] pnpm --filter @workspace/csv-profiler run dev exited with code 1
+--> Sending SIGTERM to other processes..
+[1] wait-on tcp:5000 && pnpm exec electron . --enable-logging exited with code 1
+D:\Local Statathon\Statathon2026Mainv5Localnolimit\artifacts\desktop:
+ ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @workspace/csv-profiler-desktop@1.0.0 dev:with-web: `concurrently -k "pnpm --filter @workspace/csv-profiler run dev" "wait-on tcp:5000 && pnpm exec electron . --enable-logging"`   
+Exit status 1
+ ELIFECYCLE  Command failed with exit code 1.
+PS D:\Local Statathon\Statathon2026Mainv5Localnolimit> 

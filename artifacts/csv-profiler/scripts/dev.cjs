@@ -11,6 +11,7 @@ const children = [
   spawn(pnpmCommand, ["--filter", "@workspace/api-server", "run", "dev"], {
     cwd: workspaceDir,
     stdio: "inherit",
+    shell: process.platform === "win32",
     windowsHide: false,
   }),
   spawn(
