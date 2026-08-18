@@ -19,7 +19,7 @@ function createWindow() {
 
   const devUrl = process.env.DESKTOP_DEV_URL || "http://127.0.0.1:5000";
   if (!app.isPackaged) mainWindow.loadURL(devUrl);
-  else mainWindow.loadFile(path.join(__dirname, "..", "csv-profiler", "dist", "public", "index.html"));
+  else mainWindow.loadFile(path.join(process.resourcesPath, "csv-profiler", "index.html"));
 }
 
 ipcMain.handle("choose-output-folder", async () => {

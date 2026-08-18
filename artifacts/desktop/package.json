@@ -5,11 +5,15 @@
   "main": "main.cjs",
   "scripts": {
     "dev": "electron .",
+    "dev:with-web": "concurrently -k \"pnpm --filter @workspace/csv-profiler run dev\" \"wait-on http://127.0.0.1:5000 && electron .\"",
+    "build:web": "pnpm --filter @workspace/csv-profiler run build",
     "build": "electron-builder"
   },
   "devDependencies": {
+    "concurrently": "^9.2.1",
     "electron": "^38.2.0",
-    "electron-builder": "^26.0.12"
+    "electron-builder": "^26.0.12",
+    "wait-on": "^8.0.3"
   },
   "build": {
     "appId": "com.airavata.dea.csvprofiler",
@@ -20,6 +24,12 @@
     "files": [
       "main.cjs",
       "preload.cjs"
+    ],
+    "extraResources": [
+      {
+        "from": "../csv-profiler/dist/public",
+        "to": "csv-profiler"
+      }
     ],
     "mac": {
       "target": "dmg"
