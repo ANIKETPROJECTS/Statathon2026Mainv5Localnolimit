@@ -9,7 +9,24 @@ import InfoPage from "@/pages/Info";
 import RiskAssessmentSingle, { pageCache } from "@/pages/RiskAssessmentSingle";
 import RiskAssessmentComparison from "@/pages/RiskAssessmentComparison";
 import { EncryptionSettingsProvider, useEncryptionSettings } from "@/lib/encryption-settings-context";
-import { Component, type ErrorInfo, type ReactNode } from "react";
+import { Component, useCallback, useEffect, useState, type ErrorInfo, type ReactNode } from "react";
+
+function usePackagedHashLocation(): [string, (to: string) => void] {
+  const readLocation = () => {
+    const hash = window.location.hash.replace(/^#/, "");
+    return hash && hash.startsWith("/") ? hash : "/";
+  };
+  const [location, setLocation] = useState(readLocation);
+  useEffect(() => {
+    const onHashChange = () => setLocation(readLocation());
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+  const navigate = useCallback((to: string) => {
+    window.location.hash = to.startsWith("/") ? to : `/${to}`;
+  }, []);
+  return [location, navigate];
+}
 
 class AppErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   state = { error: null as Error | null };
@@ -213,13 +230,17 @@ function App() {
   const routerBase = import.meta.env.BASE_URL === "./"
     ? ""
     : import.meta.env.BASE_URL.replace(/\/$/, "");
+  const isPackagedDesktop = window.location.protocol === "file:";
 
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <EncryptionSettingsProvider>
           <AppErrorBoundary>
-            <WouterRouter base={routerBase}>
+            <WouterRouter
+              base={routerBase}
+              hook={isPackagedDesktop ? usePackagedHashLocation : undefined}
+            >
               <AppLayout />
             </WouterRouter>
           </AppErrorBoundary>
