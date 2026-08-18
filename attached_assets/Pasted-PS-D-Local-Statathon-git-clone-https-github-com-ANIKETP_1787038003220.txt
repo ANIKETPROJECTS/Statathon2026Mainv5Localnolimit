@@ -1,0 +1,72 @@
+PS D:\Local Statathon> git clone https://github.com/ANIKETPROJECTS/Statathon2026Mainv5Localnolimit.git
+Cloning into 'Statathon2026Mainv5Localnolimit'...
+remote: Enumerating objects: 458, done.
+remote: Counting objects: 100% (458/458), done.
+remote: Compressing objects: 100% (341/341), done.
+remote: Total 458 (delta 114), reused 447 (delta 103), pack-reused 0 (from 0)
+Receiving objects: 100% (458/458), 39.32 MiB | 7.17 MiB/s, done.
+Resolving deltas: 100% (114/114), done.
+PS D:\Local Statathon> cd .\Statathon2026Mainv5Localnolimit\
+PS D:\Local Statathon\Statathon2026Mainv5Localnolimit> pnpm install
+! The local project doesn't define a 'packageManager' field. Corepack will now add one referencing pnpm@10.26.1+sha512.664074abc367d2c9324fdc18037097ce0a8f126034160f709928e9e9f95d98714347044e5c3164d65bd5da6c59c6be362b107546292a8eecb7999196e5ce58fa.
+! For more details about this field, consult the documentation at https://nodejs.org/api/packages.html#packagemanager
+
+Scope: all 10 workspace projects
+Lockfile is up to date, resolution step is skipped
+Packages: +735
++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+Progress: resolved 735, reused 733, downloaded 2, added 735, done
+
+devDependencies:
++ prettier 3.8.3
++ typescript 5.9.3
+
+. preinstall$ node scripts/check-pnpm.cjs
+└─ Done in 102ms
+Done in 13.8s using pnpm v10.26.1
+PS D:\Local Statathon\Statathon2026Mainv5Localnolimit> pnpm desktop:dev
+
+> workspace@0.0.0 desktop:dev D:\Local Statathon\Statathon2026Mainv5Localnolimit
+> pnpm --filter @workspace/csv-profiler-desktop run dev:with-web
+
+
+> @workspace/csv-profiler-desktop@1.0.0 dev:with-web D:\Local Statathon\Statathon2026Mainv5Localnolimit\artifacts\desktop
+> concurrently -k "pnpm --filter @workspace/csv-profiler run dev" "wait-on http://127.0.0.1:5000 && electron ."
+
+[0] 
+[0] > @workspace/csv-profiler@0.0.0 dev D:\Local Statathon\Statathon2026Mainv5Localnolimit\artifacts\csv-profiler
+[0] > pnpm --filter @workspace/api-server run dev & vite --config vite.config.ts --host 0.0.0.0
+[0]
+[0] 
+[0] > @workspace/api-server@0.0.0 dev D:\Local Statathon\Statathon2026Mainv5Localnolimit\artifacts\api-server
+[0] > node ./scripts/dev.cjs
+[0]
+[0] D:\Local Statathon\Statathon2026Mainv5Localnolimit\artifacts\api-server:
+[0]  ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @workspace/api-server@0.0.0 dev: `node ./scripts/dev.cjs`
+[0] Exit status 1
+[0] failed to load config from D:\Local Statathon\Statathon2026Mainv5Localnolimit\artifacts\csv-profiler\vite.config.ts
+[0] error when starting dev server:
+[0] Error: Cannot find module '../lightningcss.win32-x64-msvc.node'
+[0] Require stack:
+[0] - D:\Local Statathon\Statathon2026Mainv5Localnolimit\node_modules\.pnpm\lightningcss@1.32.0\node_modules\lightningcss\node\index.js
+[0]     at Function._resolveFilename (node:internal/modules/cjs/loader:1225:15)
+[0]     at Function._load (node:internal/modules/cjs/loader:1055:27)
+[0]     at TracingChannel.traceSync (node:diagnostics_channel:322:14)
+[0]     at wrapModuleLoad (node:internal/modules/cjs/loader:220:24)
+[0]     at Module.require (node:internal/modules/cjs/loader:1311:12)
+[0]     at require (node:internal/modules/helpers:136:16)
+[0]     at Object.<anonymous> (D:\Local Statathon\Statathon2026Mainv5Localnolimit\node_modules\.pnpm\lightningcss@1.32.0\node_modules\lightningcss\node\index.js:20:12)
+[0]     at Module._compile (node:internal/modules/cjs/loader:1554:14)
+[0]     at Object..js (node:internal/modules/cjs/loader:1706:10)
+[0]     at Module.load (node:internal/modules/cjs/loader:1289:32)
+[0] D:\Local Statathon\Statathon2026Mainv5Localnolimit\artifacts\csv-profiler:
+[0]  ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @workspace/csv-profiler@0.0.0 dev: `pnpm --filter @workspace/api-server run dev & vite --config vite.config.ts --host 0.0.0.0`
+[0] Exit status 1
+[0] pnpm --filter @workspace/csv-profiler run dev exited with code 1
+--> Sending SIGTERM to other processes..
+[1] wait-on http://127.0.0.1:5000 && electron . exited with code 1
+D:\Local Statathon\Statathon2026Mainv5Localnolimit\artifacts\desktop:
+ ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @workspace/csv-profiler-desktop@1.0.0 dev:with-web: `concurrently -k "pnpm --filter @workspace/csv-profiler run dev" "wait-on http://127.0.0.1:5000 && electron ."`
+Exit status 1
+ ELIFECYCLE  Command failed with exit code 1.
+PS D:\Local Statathon\Statathon2026Mainv5Localnolimit> 
