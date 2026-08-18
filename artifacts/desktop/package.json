@@ -1,0 +1,31 @@
+{
+  "name": "@workspace/csv-profiler-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "main": "main.cjs",
+  "scripts": {
+    "dev": "electron .",
+    "build": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^38.2.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.airavata.dea.csvprofiler",
+    "productName": "AIRAVATA DEA CSV Profiler",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "main.cjs",
+      "preload.cjs"
+    ],
+    "mac": {
+      "target": "dmg"
+    },
+    "win": {
+      "target": "nsis"
+    }
+  }
+}

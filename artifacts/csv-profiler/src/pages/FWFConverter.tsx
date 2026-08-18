@@ -62,6 +62,14 @@ type DirectoryHandle = {
   }>;
 };
 
+declare global {
+  interface Window {
+    desktopAPI?: {
+      chooseOutputFolder: () => Promise<string | null>;
+    };
+  }
+}
+
 type AnonMode = "encrypt" | "decrypt";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -152,6 +160,14 @@ export default function FWFConverter() {
   });
 
   const chooseOutputDirectory = useCallback(async () => {
+    if (window.desktopAPI) {
+      const selectedPath = await window.desktopAPI.chooseOutputFolder();
+      if (selectedPath) {
+        setOutputDirectoryName(selectedPath);
+        setOutputDirectory(null);
+      }
+      return;
+    }
     const picker = (window as Window & {
       showDirectoryPicker?: () => Promise<DirectoryHandle>;
     }).showDirectoryPicker;
