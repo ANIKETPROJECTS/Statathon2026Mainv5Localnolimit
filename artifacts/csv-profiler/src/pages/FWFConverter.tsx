@@ -56,6 +56,12 @@ interface DataFile {
   origProgress: number;
 }
 
+type DirectoryHandle = {
+  getFileHandle(name: string, options?: { create?: boolean }): Promise<{
+    createWritable(): Promise<{ write(data: Blob): Promise<void>; close(): Promise<void> }>;
+  }>;
+};
+
 type AnonMode = "encrypt" | "decrypt";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -102,6 +108,8 @@ function blankDataFile(file: File): DataFile {
 export default function FWFConverter() {
   const [layouts, setLayouts] = useState<LayoutEntry[]>([]);
   const [dataFiles, setDataFiles] = useState<DataFile[]>([]);
+  const [outputDirectory, setOutputDirectory] = useState<DirectoryHandle | null>(null);
+  const [outputDirectoryName, setOutputDirectoryName] = useState("");
 
   // Global key settings (shared across all file encryptions)
   const [anonMode, setAnonMode] = useState<AnonMode>("encrypt");
@@ -142,6 +150,34 @@ export default function FWFConverter() {
     deterministic: anonDeterministic, keyHex: anonKeyHexInput,
     alphanumericOutput: anonAlphanumeric,
   });
+
+  const chooseOutputDirectory = useCallback(async () => {
+    const picker = (window as Window & {
+      showDirectoryPicker?: () => Promise<DirectoryHandle>;
+    }).showDirectoryPicker;
+    if (!picker) {
+      alert("Folder output requires Chrome or Edge. Downloads will be used instead.");
+      return;
+    }
+    try {
+      const handle = await picker();
+      setOutputDirectory(handle);
+      setOutputDirectoryName("Selected output folder");
+    } catch {
+      // The user cancelled the picker.
+    }
+  }, []);
+
+  const saveOutput = useCallback(async (blob: Blob, name: string) => {
+    if (!outputDirectory) {
+      triggerDownload(blob, name);
+      return;
+    }
+    const fileHandle = await outputDirectory.getFileHandle(name, { create: true });
+    const writable = await fileHandle.createWritable();
+    await writable.write(blob);
+    await writable.close();
+  }, [outputDirectory]);
 
   // ── Layout handlers ──────────────────────────────────────────────────────
 
@@ -343,9 +379,9 @@ export default function FWFConverter() {
       const blob = await convertFWFToCSV(df.text, lo.result.fields, {
         onProgress: pct => patchFile(setDataFiles, dfId, { origProgress: pct }),
       });
-      triggerDownload(blob, `${df.outputBaseName}.csv`);
+      await saveOutput(blob, `${df.outputBaseName}.csv`);
     } finally { patchFile(setDataFiles, dfId, { origDownloading: false, origProgress: 0 }); }
-  }, [dataFiles, layouts]);
+  }, [dataFiles, layouts, saveOutput]);
 
   const handleExport = async (dfId: string, fmt: ExportFormat, blob: Blob, fields: FieldDef[], baseName: string) => {
     patchFile(setDataFiles, dfId, { exportingFmts: [...(dataFiles.find(d => d.id === dfId)?.exportingFmts ?? []), fmt] });
@@ -564,6 +600,11 @@ export default function FWFConverter() {
                 <p className="text-sm text-gray-500 mt-0.5">Key settings apply to all files below</p>
               </div>
             </div>
+            <button onClick={chooseOutputDirectory}
+              className="flex items-center gap-2 px-3 py-2 rounded-lg border border-emerald-300 bg-white text-sm font-semibold text-emerald-700 hover:bg-emerald-100 transition-colors">
+              <Download className="w-4 h-4" />
+              {outputDirectoryName || "Choose output folder"}
+            </button>
             <div className="flex items-center rounded-xl border border-emerald-200 overflow-hidden text-sm font-semibold flex-shrink-0 bg-white">
               {(["encrypt", "decrypt"] as const).map(m => (
                 <button key={m} onClick={() => setAnonMode(m)}
