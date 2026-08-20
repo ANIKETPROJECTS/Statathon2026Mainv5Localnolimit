@@ -1,0 +1,16 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "OUyP-8gQy8G7hrGi6y2tU"
+uri = "file://.local/outputs/AIRAVATA-DEA-Working-and-Logic.pptx"
+type = "slides"
+title = "AIRAVATA DEA Working and Logic (PPTX)"
+description = "10-slide professional presentation covering the AIRAVATA DEA frontend workflow, anonymisation and decryption logic, privacy-risk mathematics, and local-first architecture."
+logical_id = "23e9a749-79e8-4002-b37b-c526cab6efa6"
+content_hash = "sha256:4098b0fb47fa0139f211034bf4a6e291bfcfeda28efa76d413b602b172bbabd6"
+size = 7273333
+mtime_ms = 1787240936518
+storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:6dcc3020-db1f-4da6-a42a-2e6c0dc07e36/23e9a749-79e8-4002-b37b-c526cab6efa6/3c13b442-5dbe-4a22-9983-6eec6d6cdbfa"
+storage_version_token = "1787240938372089"
+content_type = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
