@@ -1,0 +1,28 @@
+kind = "slides"
+previewPath = "/slide1/"
+title = "AIRAVATA DEA — Working & Logic"
+description = "A concise professional presentation covering the AIRAVATA DEA frontend workflow, anonymisation logic, decryption, privacy-risk mathematics, and local-first architecture."
+version = "1.0.0"
+id = "artifacts/airavata-dea-working-logic"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/slide1/" ]
+localPort = 22345
+
+[services.development]
+run = "pnpm --filter @workspace/airavata-dea-working-logic run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/airavata-dea-working-logic", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/airavata-dea-working-logic/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "22345"
+BASE_PATH = "/slide1/"

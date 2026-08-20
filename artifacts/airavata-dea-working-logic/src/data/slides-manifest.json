@@ -1,0 +1,82 @@
+[
+  {
+    "id": "c7f4b7a1-2f48-4a18-9f1c-2a6a7d7e3c01",
+    "position": 1,
+    "filepath": "src/pages/slides/Title.tsx",
+    "title": "AIRAVATA DEA",
+    "description": "Convert legacy data. Protect selected fields. Measure privacy risk.",
+    "speakerNotes": ""
+  },
+  {
+    "id": "c7f4b7a1-2f48-4a18-9f1c-2a6a7d7e3c02",
+    "position": 2,
+    "filepath": "src/pages/slides/FixedWidth.tsx",
+    "title": "From fixed-width text to usable data",
+    "description": "Upload a layout, parse field positions, and create a readable CSV.",
+    "speakerNotes": ""
+  },
+  {
+    "id": "c7f4b7a1-2f48-4a18-9f1c-2a6a7d7e3c03",
+    "position": 3,
+    "filepath": "src/pages/slides/Frontend.tsx",
+    "title": "The frontend workflow",
+    "description": "The visual path from file selection to protected output.",
+    "speakerNotes": ""
+  },
+  {
+    "id": "c7f4b7a1-2f48-4a18-9f1c-2a6a7d7e3c04",
+    "position": 4,
+    "filepath": "src/pages/slides/FPE.tsx",
+    "title": "Format-preserving anonymisation",
+    "description": "Selected values change while length and character classes remain usable.",
+    "speakerNotes": ""
+  },
+  {
+    "id": "c7f4b7a1-2f48-4a18-9f1c-2a6a7d7e3c05",
+    "position": 5,
+    "filepath": "src/pages/slides/ValueTransform.tsx",
+    "title": "How one value is transformed",
+    "description": "Five reversible operations per character, chained across four rounds.",
+    "speakerNotes": ""
+  },
+  {
+    "id": "c7f4b7a1-2f48-4a18-9f1c-2a6a7d7e3c06",
+    "position": 6,
+    "filepath": "src/pages/slides/KeysIntegrity.tsx",
+    "title": "Keys, salt, and integrity",
+    "description": "Key derivation, fresh export salt, and HMAC verification.",
+    "speakerNotes": ""
+  },
+  {
+    "id": "c7f4b7a1-2f48-4a18-9f1c-2a6a7d7e3c07",
+    "position": 7,
+    "filepath": "src/pages/slides/Risk.tsx",
+    "title": "Risk assessment: the prosecutor attack",
+    "description": "Equivalence classes turn quasi-identifiers into measurable exposure.",
+    "speakerNotes": ""
+  },
+  {
+    "id": "c7f4b7a1-2f48-4a18-9f1c-2a6a7d7e3c08",
+    "position": 8,
+    "filepath": "src/pages/slides/Diversity.tsx",
+    "title": "Beyond k-anonymity",
+    "description": "l-diversity and t-closeness test sensitive-value concentration.",
+    "speakerNotes": ""
+  },
+  {
+    "id": "c7f4b7a1-2f48-4a18-9f1c-2a6a7d7e3c09",
+    "position": 9,
+    "filepath": "src/pages/slides/Comparison.tsx",
+    "title": "Original vs anonymised: prove the improvement",
+    "description": "Compare risk metrics and changed values before release.",
+    "speakerNotes": ""
+  },
+  {
+    "id": "c7f4b7a1-2f48-4a18-9f1c-2a6a7d7e3c10",
+    "position": 10,
+    "filepath": "src/pages/slides/Architecture.tsx",
+    "title": "Local-first architecture and key takeaway",
+    "description": "The same React application runs locally in browser and Electron.",
+    "speakerNotes": ""
+  }
+]
