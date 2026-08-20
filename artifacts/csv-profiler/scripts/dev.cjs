@@ -7,13 +7,22 @@ const pnpmCommand = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
 const viteModuleDir = path.dirname(require.resolve("vite", { paths: [artifactDir] }));
 const vitePath = path.resolve(viteModuleDir, "..", "..", "bin", "vite.js");
 
-const children = [
-  spawn(pnpmCommand, ["--filter", "@workspace/api-server", "run", "dev"], {
-    cwd: workspaceDir,
-    stdio: "inherit",
-    shell: process.platform === "win32",
-    windowsHide: false,
-  }),
+const children = [];
+
+// Replit runs the API as its own managed workflow. The local Electron
+// launcher does not, so it keeps the API as a sibling process locally.
+if (!process.env.REPL_ID) {
+  children.push(
+    spawn(pnpmCommand, ["--filter", "@workspace/api-server", "run", "dev"], {
+      cwd: workspaceDir,
+      stdio: "inherit",
+      shell: process.platform === "win32",
+      windowsHide: false,
+    }),
+  );
+}
+
+children.push(
   spawn(
     process.execPath,
     [vitePath, "--config", path.join(artifactDir, "vite.config.ts"), "--host", "0.0.0.0"],
@@ -23,7 +32,7 @@ const children = [
       windowsHide: false,
     },
   ),
-];
+);
 
 let shuttingDown = false;
 
