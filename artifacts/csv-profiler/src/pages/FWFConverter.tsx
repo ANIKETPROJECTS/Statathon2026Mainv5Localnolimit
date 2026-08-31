@@ -1149,14 +1149,14 @@ function DataFileRow({ df, readyLayouts, onAssign, onTogglePreview, onProcess, o
   return (
     <div className={`border rounded-xl overflow-hidden ${df.activated ? "border-emerald-200" : df.error ? "border-red-200" : "border-gray-200"}`}>
       {/* Main row */}
-      <div className={`flex items-center gap-3 px-4 py-3 ${df.activated ? "bg-emerald-50" : "bg-white"}`}>
+      <div className={`flex flex-wrap items-center gap-3 px-4 py-3 ${df.activated ? "bg-emerald-50" : "bg-white"}`}>
         {df.lineCount > 0
           ? <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
           : df.error
           ? <AlertTriangle className="w-4 h-4 text-red-500 flex-shrink-0" />
           : <Spin />}
 
-        <div className="flex-1 min-w-0">
+        <div className="flex-1 min-w-[8rem]">
           <p className="text-sm font-semibold text-black truncate">{df.fileName}</p>
           {df.lineCount > 0 && <p className="text-xs text-gray-500">{df.lineCount.toLocaleString()} records</p>}
           {df.error && <p className="text-xs text-red-600 truncate">{df.error}</p>}
@@ -1164,11 +1164,12 @@ function DataFileRow({ df, readyLayouts, onAssign, onTogglePreview, onProcess, o
 
         {/* Layout assignment dropdown */}
         {df.lineCount > 0 && (
-          <div className="relative flex-shrink-0">
+          <div className="relative min-w-[11rem] max-w-full flex-[1_1_14rem]">
             <select
               value={df.layoutId}
               onChange={e => onAssign(e.target.value)}
-              className={`appearance-none text-xs font-medium px-2.5 py-1.5 pr-7 rounded-lg border cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-500 ${df.layoutId ? "border-blue-300 bg-blue-50 text-blue-800" : "border-gray-200 bg-white text-gray-500"}`}>
+              title={assignedLayout?.fileName}
+              className={`block w-full min-w-0 max-w-full appearance-none truncate text-xs font-medium px-2.5 py-1.5 pr-7 rounded-lg border cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-500 ${df.layoutId ? "border-blue-300 bg-blue-50 text-blue-800" : "border-gray-200 bg-white text-gray-500"}`}>
               <option value="">— assign layout —</option>
               {readyLayouts.map(lo => (
                 <option key={lo.id} value={lo.id}>
@@ -1182,27 +1183,30 @@ function DataFileRow({ df, readyLayouts, onAssign, onTogglePreview, onProcess, o
           </div>
         )}
 
-        {/* Preview toggle */}
-        {df.preview.length > 0 && (
-          <button onClick={onTogglePreview}
-            className="flex items-center gap-1 text-xs px-2 py-1.5 rounded-lg border border-gray-200 text-gray-500 hover:text-black hover:border-gray-400 transition-colors flex-shrink-0">
-            <Eye className="w-3.5 h-3.5" />
-            {df.showPreview ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
-          </button>
-        )}
+        {/* Actions stay together and wrap below the filename/selector when needed. */}
+        <div className="ml-auto flex items-center gap-2 flex-shrink-0">
+          {/* Preview toggle */}
+          {df.preview.length > 0 && (
+            <button onClick={onTogglePreview}
+              className="flex items-center gap-1 text-xs px-2 py-1.5 rounded-lg border border-gray-200 text-gray-500 hover:text-black hover:border-gray-400 transition-colors flex-shrink-0">
+              <Eye className="w-3.5 h-3.5" />
+              {df.showPreview ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+            </button>
+          )}
 
-        {/* Process button */}
-        {canProcess && (
-          <button onClick={onProcess}
-            className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-black text-white hover:bg-gray-800 transition-colors flex-shrink-0 whitespace-nowrap">
-            <ArrowRight className="w-3.5 h-3.5" />Process
-          </button>
-        )}
-        {df.activated && (
-          <span className="text-xs font-semibold text-emerald-700 bg-emerald-100 px-2.5 py-1 rounded-lg flex-shrink-0 whitespace-nowrap">Active ↓</span>
-        )}
+          {/* Process button */}
+          {canProcess && (
+            <button onClick={onProcess}
+              className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-black text-white hover:bg-gray-800 transition-colors flex-shrink-0 whitespace-nowrap">
+              <ArrowRight className="w-3.5 h-3.5" />Process
+            </button>
+          )}
+          {df.activated && (
+            <span className="text-xs font-semibold text-emerald-700 bg-emerald-100 px-2.5 py-1 rounded-lg flex-shrink-0 whitespace-nowrap">Active ↓</span>
+          )}
 
-        <button onClick={onRemove} className="text-gray-400 hover:text-black flex-shrink-0"><X className="w-4 h-4" /></button>
+          <button onClick={onRemove} className="text-gray-400 hover:text-black flex-shrink-0"><X className="w-4 h-4" /></button>
+        </div>
       </div>
 
       {/* Preview table (expandable) */}
