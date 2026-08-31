@@ -260,15 +260,76 @@ export default function FWFConverter() {
       } else {
         try {
           const info = await readExcelFileInfo(file);
-          // Pre-select all sheets so the user can deselect what they don't need
+          const hasDetectedTables = info.sheetNames.some(sheetName =>
+            getExcelTableInfos(info.buf, sheetName).length > 0
+          );
+
+          if (!hasDetectedTables) {
+            // Keep the manual sheet/range flow for conventional layouts that
+            // do not contain recognizable table blocks.
+            patchLayout(setLayouts, entry.id, {
+              excelInfo: info,
+              sheetSelectOpen: true,
+              selectedSheets: [...info.sheetNames],
+              sheetRowCount: info.sheetNames.length === 1
+                ? getSheetRowCount(info.buf, info.sheetNames[0])
+                : 0,
+            });
+            continue;
+          }
+
+          // Multi-table workbooks are parsed immediately on upload. Each
+          // questionnaire level becomes its own layout card and can be
+          // assigned to the matching fixed-width data file.
+          const jobs = layoutJobsForSheets(info, info.sheetNames);
+          const [firstJob, ...extraJobs] = jobs;
           patchLayout(setLayouts, entry.id, {
             excelInfo: info,
-            sheetSelectOpen: true,
-            selectedSheets: [...info.sheetNames],
-            sheetRowCount: info.sheetNames.length === 1
-              ? getSheetRowCount(info.buf, info.sheetNames[0])
-              : 0,
+            sheetSelectOpen: false,
+            selectedSheets: [firstJob.sheetName],
+            sheetRowCount: getSheetRowCount(info.buf, firstJob.sheetName),
+            applyingSheet: true,
           });
+          try {
+            const result = await parseLayoutFile(file, {
+              sheetName: firstJob.sheetName,
+              tableIndex: firstJob.tableIndex,
+            });
+            patchLayout(setLayouts, entry.id, result.fields.length
+              ? { result, applyingSheet: false }
+              : { error: result.warnings.join(" ") || "No fields found.", applyingSheet: false });
+          } catch (e) {
+            patchLayout(setLayouts, entry.id, {
+              error: `Parse error: ${(e as Error).message}`,
+              applyingSheet: false,
+            });
+            continue;
+          }
+
+          for (const job of extraJobs) {
+            const newEntry: LayoutEntry = {
+              id: uid(), file, fileName: file.name,
+              excelInfo: info, sheetSelectOpen: false,
+              selectedSheets: [job.sheetName], rowFrom: "", rowTo: "",
+              sheetRowCount: getSheetRowCount(info.buf, job.sheetName),
+              applyingSheet: true, result: null, error: "",
+            };
+            setLayouts(prev => [...prev, newEntry]);
+            try {
+              const result = await parseLayoutFile(file, {
+                sheetName: job.sheetName,
+                tableIndex: job.tableIndex,
+              });
+              patchLayout(setLayouts, newEntry.id, result.fields.length
+                ? { result, applyingSheet: false }
+                : { error: result.warnings.join(" ") || "No fields found.", applyingSheet: false });
+            } catch (e) {
+              patchLayout(setLayouts, newEntry.id, {
+                error: `Parse error: ${(e as Error).message}`,
+                applyingSheet: false,
+              });
+            }
+          }
         } catch (e) { patchLayout(setLayouts, entry.id, { error: `Read error: ${(e as Error).message}` }); }
       }
     }
