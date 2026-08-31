@@ -1009,7 +1009,15 @@ function LayoutCard({ lo, onConfirmSheet, onAutoDetect, onSheetToggle, onSelectA
       {/* Field preview (when done) */}
       {done && fields.length > 0 && (
         <div className="overflow-auto max-h-44 border-t border-gray-100">
-          <table className="w-full text-xs border-collapse">
+          <table className="w-full table-fixed text-xs border-collapse">
+            <colgroup>
+              <col className="w-[5%]" />
+              <col className="w-[35%]" />
+              <col className="w-[39%]" />
+              <col className="w-[7%]" />
+              <col className="w-[7%]" />
+              <col className="w-[7%]" />
+            </colgroup>
             <thead className="bg-gray-50 sticky top-0">
               <tr>{["#", "Variable", "Full Name", "Start", "End", "Len"].map(h => (
                 <th key={h} className="px-2.5 py-1.5 text-left border-r last:border-r-0 border-gray-200 text-gray-500 font-semibold whitespace-nowrap">{h}</th>
@@ -1019,8 +1027,8 @@ function LayoutCard({ lo, onConfirmSheet, onAutoDetect, onSheetToggle, onSelectA
               {fields.map(f => (
                 <tr key={f.srlNo} className="border-t border-gray-100 hover:bg-gray-50">
                   <td className="px-2.5 py-1.5 text-gray-400 font-mono border-r border-gray-100">{f.srlNo}</td>
-                  <td className="px-2.5 py-1.5 font-semibold text-black border-r border-gray-100 whitespace-nowrap">{f.varName}</td>
-                  <td className="px-2.5 py-1.5 text-gray-600 border-r border-gray-100 max-w-[140px] truncate">{f.fullName}</td>
+                  <td className="px-2.5 py-1.5 font-semibold text-black border-r border-gray-100 break-words whitespace-normal">{f.varName}</td>
+                  <td className="px-2.5 py-1.5 text-gray-600 border-r border-gray-100 break-words whitespace-normal" title={f.fullName}>{f.fullName}</td>
                   <td className="px-2.5 py-1.5 text-center font-mono text-black border-r border-gray-100">{f.start}</td>
                   <td className="px-2.5 py-1.5 text-center font-mono text-black border-r border-gray-100">{f.end}</td>
                   <td className="px-2.5 py-1.5 text-center font-mono text-black">{f.length}</td>
