@@ -8,7 +8,7 @@ import {
 import folderIcon from "@assets/open-folder_1781738999125.png";
 import {
   parseLayoutFile, readExcelFileInfo, getSheetRowCount, convertFWFToCSV,
-  getExcelTableInfos, type FieldDef, type ParseLayoutResult, type ExcelFileInfo,
+  getExcelTableInfos, type FieldDef, type ParseLayoutResult, type ExcelFileInfo, type ExcelTableInfo,
 } from "@/lib/fwf-parser";
 import {
   encryptFWFToBlob, decryptCSVToBlob, readCSVHeaders,
@@ -31,6 +31,20 @@ interface LayoutEntry {
   applyingSheet: boolean;
   result: ParseLayoutResult | null;
   error: string;
+}
+
+interface DetectedTableOption extends ExcelTableInfo {
+  key: string;
+  sheetName: string;
+}
+
+interface PendingTableSelection {
+  id: string;
+  file: File;
+  fileName: string;
+  excelInfo: ExcelFileInfo;
+  tables: DetectedTableOption[];
+  selectedKeys: string[];
 }
 
 type LayoutJob = {
@@ -155,10 +169,35 @@ function layoutJobsForSheets(info: ExcelFileInfo, sheetNames: string[]): LayoutJ
   return jobs;
 }
 
+function tableOptionKey(sheetName: string, tableIndex: number): string {
+  return `${sheetName}\u0000${tableIndex}`;
+}
+
+function detectedTablesForWorkbook(info: ExcelFileInfo): DetectedTableOption[] {
+  return info.sheetNames.flatMap(sheetName =>
+    getExcelTableInfos(info.buf, sheetName).map(table => ({
+      ...table,
+      key: tableOptionKey(sheetName, table.index),
+      sheetName,
+    }))
+  );
+}
+
+function newLayoutEntry(file: File, overrides: Partial<LayoutEntry> = {}): LayoutEntry {
+  return {
+    id: uid(), file, fileName: file.name,
+    excelInfo: null, sheetSelectOpen: false,
+    selectedSheets: [], rowFrom: "", rowTo: "",
+    sheetRowCount: 0, applyingSheet: false, result: null, error: "",
+    ...overrides,
+  };
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function FWFConverter() {
   const [layouts, setLayouts] = useState<LayoutEntry[]>([]);
+  const [pendingTableSelections, setPendingTableSelections] = useState<PendingTableSelection[]>([]);
   const [dataFiles, setDataFiles] = useState<DataFile[]>([]);
   const [outputDirectory, setOutputDirectory] = useState<DirectoryHandle | null>(null);
   const [outputDirectoryName, setOutputDirectoryName] = useState("");
@@ -244,15 +283,10 @@ export default function FWFConverter() {
   const handleLayoutFiles = useCallback(async (files: File[]) => {
     for (const file of files) {
       const isCSV = /\.(csv|tsv)$/i.test(file.name);
-      const entry: LayoutEntry = {
-        id: uid(), file, fileName: file.name,
-        excelInfo: null, sheetSelectOpen: false,
-        selectedSheets: [], rowFrom: "", rowTo: "",
-        sheetRowCount: 0, applyingSheet: false, result: null, error: "",
-      };
-      setLayouts(prev => [...prev, entry]);
 
       if (isCSV) {
+        const entry = newLayoutEntry(file);
+        setLayouts(prev => [...prev, entry]);
         try {
           const result = await parseLayoutFile(file);
           patchLayout(setLayouts, entry.id, result.fields.length ? { result } : { error: result.warnings.join(" ") || "No fields found." });
@@ -260,13 +294,13 @@ export default function FWFConverter() {
       } else {
         try {
           const info = await readExcelFileInfo(file);
-          const hasDetectedTables = info.sheetNames.some(sheetName =>
-            getExcelTableInfos(info.buf, sheetName).length > 0
-          );
+          const detectedTables = detectedTablesForWorkbook(info);
 
-          if (!hasDetectedTables) {
+          if (detectedTables.length === 0) {
             // Keep the manual sheet/range flow for conventional layouts that
             // do not contain recognizable table blocks.
+            const entry = newLayoutEntry(file);
+            setLayouts(prev => [...prev, entry]);
             patchLayout(setLayouts, entry.id, {
               excelInfo: info,
               sheetSelectOpen: true,
@@ -278,61 +312,77 @@ export default function FWFConverter() {
             continue;
           }
 
-          // Multi-table workbooks are parsed immediately on upload. Each
-          // questionnaire level becomes its own layout card and can be
-          // assigned to the matching fixed-width data file.
-          const jobs = layoutJobsForSheets(info, info.sheetNames);
-          const [firstJob, ...extraJobs] = jobs;
-          patchLayout(setLayouts, entry.id, {
+          // Wait for the user to choose which detected tables should become
+          // layout cards instead of parsing every table immediately.
+          const pendingId = uid();
+          setPendingTableSelections(prev => [...prev, {
+            id: pendingId,
+            file,
+            fileName: file.name,
             excelInfo: info,
-            sheetSelectOpen: false,
-            selectedSheets: [firstJob.sheetName],
-            sheetRowCount: getSheetRowCount(info.buf, firstJob.sheetName),
-            applyingSheet: true,
-          });
-          try {
-            const result = await parseLayoutFile(file, {
-              sheetName: firstJob.sheetName,
-              tableIndex: firstJob.tableIndex,
-            });
-            patchLayout(setLayouts, entry.id, result.fields.length
-              ? { result, applyingSheet: false }
-              : { error: result.warnings.join(" ") || "No fields found.", applyingSheet: false });
-          } catch (e) {
-            patchLayout(setLayouts, entry.id, {
-              error: `Parse error: ${(e as Error).message}`,
-              applyingSheet: false,
-            });
-            continue;
-          }
-
-          for (const job of extraJobs) {
-            const newEntry: LayoutEntry = {
-              id: uid(), file, fileName: file.name,
-              excelInfo: info, sheetSelectOpen: false,
-              selectedSheets: [job.sheetName], rowFrom: "", rowTo: "",
-              sheetRowCount: getSheetRowCount(info.buf, job.sheetName),
-              applyingSheet: true, result: null, error: "",
-            };
-            setLayouts(prev => [...prev, newEntry]);
-            try {
-              const result = await parseLayoutFile(file, {
-                sheetName: job.sheetName,
-                tableIndex: job.tableIndex,
-              });
-              patchLayout(setLayouts, newEntry.id, result.fields.length
-                ? { result, applyingSheet: false }
-                : { error: result.warnings.join(" ") || "No fields found.", applyingSheet: false });
-            } catch (e) {
-              patchLayout(setLayouts, newEntry.id, {
-                error: `Parse error: ${(e as Error).message}`,
-                applyingSheet: false,
-              });
-            }
-          }
-        } catch (e) { patchLayout(setLayouts, entry.id, { error: `Read error: ${(e as Error).message}` }); }
+            tables: detectedTables,
+            selectedKeys: detectedTables.map(table => table.key),
+          }]);
+        } catch (e) {
+          const entry = newLayoutEntry(file, { error: `Read error: ${(e as Error).message}` });
+          setLayouts(prev => [...prev, entry]);
+        }
       }
     }
+  }, []);
+
+  const confirmDetectedTables = useCallback(async (pendingId: string) => {
+    const pending = pendingTableSelections.find(selection => selection.id === pendingId);
+    if (!pending || pending.selectedKeys.length === 0) return;
+
+    const selectedTables = pending.tables.filter(table => pending.selectedKeys.includes(table.key));
+    setPendingTableSelections(prev => prev.filter(selection => selection.id !== pendingId));
+
+    for (const table of selectedTables) {
+      const entry = newLayoutEntry(pending.file, {
+        excelInfo: pending.excelInfo,
+        selectedSheets: [table.sheetName],
+        sheetRowCount: getSheetRowCount(pending.excelInfo.buf, table.sheetName),
+        applyingSheet: true,
+      });
+      setLayouts(prev => [...prev, entry]);
+      try {
+        const result = await parseLayoutFile(pending.file, {
+          sheetName: table.sheetName,
+          tableIndex: table.index,
+        });
+        patchLayout(setLayouts, entry.id, result.fields.length
+          ? { result, applyingSheet: false }
+          : { error: result.warnings.join(" ") || "No fields found.", applyingSheet: false });
+      } catch (e) {
+        patchLayout(setLayouts, entry.id, {
+          error: `Parse error: ${(e as Error).message}`,
+          applyingSheet: false,
+        });
+      }
+    }
+  }, [pendingTableSelections]);
+
+  const togglePendingTable = useCallback((pendingId: string, tableKey: string) => {
+    setPendingTableSelections(prev => prev.map(selection => {
+      if (selection.id !== pendingId) return selection;
+      const selectedKeys = selection.selectedKeys.includes(tableKey)
+        ? selection.selectedKeys.filter(key => key !== tableKey)
+        : [...selection.selectedKeys, tableKey];
+      return { ...selection, selectedKeys };
+    }));
+  }, []);
+
+  const selectAllPendingTables = useCallback((pendingId: string, selected: boolean) => {
+    setPendingTableSelections(prev => prev.map(selection =>
+      selection.id === pendingId
+        ? { ...selection, selectedKeys: selected ? selection.tables.map(table => table.key) : [] }
+        : selection
+    ));
+  }, []);
+
+  const removePendingTableSelection = useCallback((pendingId: string) => {
+    setPendingTableSelections(prev => prev.filter(selection => selection.id !== pendingId));
   }, []);
 
   const confirmSheet = useCallback(async (id: string) => {
@@ -666,12 +716,23 @@ export default function FWFConverter() {
               onChange={e => { const f = Array.from(e.target.files ?? []); if (f.length) handleLayoutFiles(f); e.target.value = ""; }} />
           </div>
 
-          {layouts.length === 0 ? (
+          {layouts.length === 0 && pendingTableSelections.length === 0 ? (
             <DropZone accept=".xlsx,.xls,.csv" multiple icon={<img src={folderIcon} className="w-20 h-20 object-contain" alt="" />}
               label="Drop layout files here" sublabel="Excel or CSV — multiple files supported"
               inputRef={layoutInputRef} onFiles={handleLayoutFiles} />
           ) : (
             <div className="space-y-3">
+              {pendingTableSelections.map(selection => (
+                <DetectedTablesCard
+                  key={selection.id}
+                  selection={selection}
+                  onToggleTable={tableKey => togglePendingTable(selection.id, tableKey)}
+                  onSelectAll={() => selectAllPendingTables(selection.id, true)}
+                  onDeselectAll={() => selectAllPendingTables(selection.id, false)}
+                  onConfirm={() => confirmDetectedTables(selection.id)}
+                  onRemove={() => removePendingTableSelection(selection.id)}
+                />
+              ))}
               {layouts.map(lo => (
                 <LayoutCard key={lo.id} lo={lo}
                   onConfirmSheet={() => confirmSheet(lo.id)}
@@ -965,6 +1026,92 @@ export default function FWFConverter() {
 }
 
 // ── LayoutCard ────────────────────────────────────────────────────────────────
+
+function DetectedTablesCard({ selection, onToggleTable, onSelectAll, onDeselectAll, onConfirm, onRemove }: {
+  selection: PendingTableSelection;
+  onToggleTable: (tableKey: string) => void;
+  onSelectAll: () => void;
+  onDeselectAll: () => void;
+  onConfirm: () => void;
+  onRemove: () => void;
+}) {
+  const allSelected = selection.selectedKeys.length === selection.tables.length;
+  const noneSelected = selection.selectedKeys.length === 0;
+
+  return (
+    <div className="border border-blue-200 rounded-xl overflow-hidden">
+      <div className="flex items-start gap-3 px-4 py-3 bg-blue-50">
+        <FileSpreadsheet className="w-4 h-4 text-blue-600 flex-shrink-0 mt-0.5" />
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-semibold text-black break-words">{selection.fileName}</p>
+          <p className="text-xs text-blue-700 mt-0.5">
+            {selection.tables.length} table{selection.tables.length !== 1 ? "s" : ""} detected — choose which to import
+          </p>
+        </div>
+        <button onClick={onRemove} className="text-gray-400 hover:text-black flex-shrink-0" aria-label={`Remove ${selection.fileName}`}>
+          <X className="w-4 h-4" />
+        </button>
+      </div>
+
+      <div className="p-4 space-y-3">
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-sm font-semibold text-black">Tables to import</p>
+          <div className="flex items-center gap-3 text-xs">
+            <button onClick={onSelectAll} disabled={allSelected} className="text-blue-600 hover:text-blue-800 disabled:text-gray-300 disabled:cursor-not-allowed">
+              Select all
+            </button>
+            <button onClick={onDeselectAll} disabled={noneSelected} className="text-gray-500 hover:text-black disabled:text-gray-300 disabled:cursor-not-allowed">
+              Deselect all
+            </button>
+          </div>
+        </div>
+
+        <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+          {selection.tables.map(table => {
+            const checked = selection.selectedKeys.includes(table.key);
+            return (
+              <label
+                key={table.key}
+                className={`flex items-start gap-3 px-3 py-2.5 rounded-xl border cursor-pointer transition-colors ${
+                  checked ? "border-blue-400 bg-blue-50/60" : "border-gray-200 hover:border-blue-300"
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={() => onToggleTable(table.key)}
+                  className="accent-blue-600 w-4 h-4 flex-shrink-0 mt-0.5 rounded"
+                />
+                <span className="flex-1 min-w-0">
+                  <span className="block text-sm font-medium text-black break-words">
+                    Table {table.index + 1} · {table.title}
+                  </span>
+                  <span className="block text-xs text-gray-500 mt-0.5 break-words">
+                    Sheet: {table.sheetName} · header row {table.headerRow + 1} · data starts row {table.firstDataRow + 1}
+                  </span>
+                </span>
+              </label>
+            );
+          })}
+        </div>
+
+        <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+          <span className="text-xs text-gray-500">
+            {selection.selectedKeys.length} of {selection.tables.length} selected
+          </span>
+          <button
+            onClick={onConfirm}
+            disabled={noneSelected}
+            className="flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl bg-black text-white text-sm font-semibold hover:bg-gray-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            <ArrowRight className="w-3.5 h-3.5" />
+            Use selected tables
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function LayoutCard({ lo, onConfirmSheet, onAutoDetect, onSheetToggle, onSelectAllSheets, onDeselectAllSheets, onRangeChange, onAddRange, onRemove }: {
   lo: LayoutEntry;
