@@ -1,0 +1,65 @@
+root@srv1232657:/var/www# ls
+AES2                  AutogamaSoftwareV6       BarrelBornV5         JwelryCatalogV2               STATATHONCONVERYERv1  TARANGDIGITALMENUV1        html            restaurant-app
+ATdigitalmenuV2       BUNG-LE-Digital-Menu-V3  Clothtryonnewv2      MINGSCHINESECUISINEWEBSITE    Salon-Manager-Suite   WHAMO_NETWORKV8-pltandtab  krushi-suvidha  vipcatalogue
+Airavata-Whatsapp-V1  BUNG-LE-POS-V3           Digital-PortfolioV2  NewATdigitalmenuAdminPanelv1  Statathon-2025-V4     airavata                   labourlawjssr   vipul22feb
+root@srv1232657:/var/www# rm -rf Statathon-2025-V4/
+root@srv1232657:/var/www# git clone https://github.com/ANIKETPROJECTS/Statathon2026Mainv5Localnolimit.git Statathon-2025-V4
+Cloning into 'Statathon-2025-V4'...
+remote: Enumerating objects: 862, done.
+remote: Counting objects: 100% (4/4), done.
+remote: Compressing objects: 100% (4/4), done.
+remote: Total 862 (delta 0), reused 0 (delta 0), pack-reused 858 (from 2)
+Receiving objects: 100% (862/862), 115.19 MiB | 9.73 MiB/s, done.
+Resolving deltas: 100% (226/226), done.
+root@srv1232657:/var/www# ^C
+root@srv1232657:/var/www# cd Statathon-2025-V4/
+root@srv1232657:/var/www/Statathon-2025-V4# cd /var/www/Statathon-2025-V4
+pnpm install --frozen-lockfile
+Scope: all 11 workspace projects
+Lockfile is up to date, resolution step is skipped
+Packages: +748
++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+Progress: resolved 748, reused 748, downloaded 0, added 748, done
+node_modules/.pnpm/electron@38.8.6/node_modules/electron: Running postinstall script, done in 2.6s
+
+devDependencies:
++ prettier 3.8.3
++ typescript 5.9.3
+
+. preinstall$ node scripts/check-pnpm.cjs
+└─ Done in 56ms
+Done in 9.3s using pnpm v10.33.0
+root@srv1232657:/var/www/Statathon-2025-V4# cd /var/www/Statathon-2025-V4
+pnpm --filter @workspace/csv-profiler run build
+
+> @workspace/csv-profiler@0.0.0 build /var/www/Statathon-2025-V4/artifacts/csv-profiler
+> vite build --config vite.config.ts
+
+vite v7.3.3 building client environment for production...
+src/components/ui/tooltip.tsx (2:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.
+✓ 2402 modules transformed.
+dist/public/index.html                                         1.41 kB │ gzip:   0.54 kB
+dist/public/assets/open-folder_1781738999125-CKHdFeiC.png      8.38 kB
+dist/public/assets/index-6eMfJZND.css                        134.57 kB │ gzip:  22.12 kB
+dist/public/assets/index-DKb-dVpV.js                       1,913.60 kB │ gzip: 555.50 kB
+
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 9.60s
+root@srv1232657:/var/www/Statathon-2025-V4# ls -lah artifacts/csv-profiler/dist/public
+total 256K
+drwxr-xr-x 3 root root 4.0K Aug 31 14:34 .
+drwxr-xr-x 3 root root 4.0K Aug 31 14:34 ..
+-rw-r--r-- 1 root root 108K Aug 31 14:34 airavata-logo.png
+drwxr-xr-x 2 root root 4.0K Aug 31 14:34 assets
+-rw-r--r-- 1 root root 112K Aug 31 14:34 favicon.png
+-rw-r--r-- 1 root root  163 Aug 31 14:34 favicon.svg
+-rw-r--r-- 1 root root 1.4K Aug 31 14:34 index.html
+-rw-r--r-- 1 root root   23 Aug 31 14:34 robots.txt
+-rw-r--r-- 1 root root 9.2K Aug 31 14:34 shield-check.png
+root@srv1232657:/var/www/Statathon-2025-V4# pm2 start ecosystem.config.cjs
+[PM2][WARN] Applications csv-profiler not running, starting...
+[PM2][ERROR] Error: Script not found: /var/www/Statathon-2025-V4/artifacts/api-server/dist/index.mjs
+root@srv1232657:/var/www/Statathon-2025-V4#
