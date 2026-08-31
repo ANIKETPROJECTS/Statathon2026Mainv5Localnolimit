@@ -1,1 +1,2 @@
 - [Artifact routing in Replit](artifact-routing.md) — the public preview needs the `artifacts/<name>: web` workflow running, not just "Start application".
+- [Multi-table layout workbooks](multi-table-layout-workbooks.md) — level-based fixed-width layouts may share a Common-ID byte range that must expand to base fields.

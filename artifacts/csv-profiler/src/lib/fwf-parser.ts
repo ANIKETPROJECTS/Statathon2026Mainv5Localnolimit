@@ -17,6 +17,14 @@ export interface ParseLayoutResult {
   warnings: string[];
 }
 
+export interface ExcelTableInfo {
+  index: number;
+  title: string;
+  headerRow: number;
+  firstDataRow: number;
+  endRow: number;
+}
+
 export interface ExcelFileInfo {
   sheetNames: string[];
   buf: ArrayBuffer;
@@ -73,6 +81,60 @@ function detectColumns(headers: string[]): Record<string, number> {
     if (key && !(key in map)) map[key] = i;
   });
   return map;
+}
+
+function isTableHeader(row: unknown[]): boolean {
+  const headers = row.map(nh);
+  const hasSerial = headers.some(h => h === "srlno" || h === "slno" || h === "serialno");
+  const hasItem = headers.includes("item");
+  const hasLength = headers.includes("length") || headers.includes("len") || headers.includes("fieldlength");
+  const hasBytePosition = headers.includes("byteposition") ||
+    headers.includes("bytepos") ||
+    headers.includes("bytepositions");
+  const hasExplicitPositions = headers.includes("start") || headers.includes("startbyte");
+  return hasSerial && hasItem && hasLength && (hasBytePosition || hasExplicitPositions);
+}
+
+function rowHasSerialNumber(row: unknown[]): boolean {
+  return /^\d+$/.test(String(row[0] ?? "").trim());
+}
+
+function tableTitle(aoa: unknown[][], headerRow: number, index: number): string {
+  for (let r = headerRow - 1; r >= 0; r--) {
+    const text = aoa[r]
+      .map(cell => String(cell ?? "").trim())
+      .filter(Boolean)
+      .join(" ");
+    if (!text) continue;
+    if (/^ques\b/i.test(text) || /file\s*name\s*:/i.test(text)) return text;
+    if (headerRow - r > 3) break;
+  }
+  return `Table ${index + 1}`;
+}
+
+function detectTableBlocks(aoa: unknown[][]): ExcelTableInfo[] {
+  const headerRows: number[] = [];
+  for (let r = 0; r < aoa.length; r++) {
+    if (isTableHeader(aoa[r])) headerRows.push(r);
+  }
+
+  return headerRows.map((headerRow, index) => {
+    let firstDataRow = headerRow + 1;
+    while (
+      firstDataRow < aoa.length &&
+      !rowHasSerialNumber(aoa[firstDataRow]) &&
+      (aoa[firstDataRow].length === 0 || aoa[firstDataRow].some(cell => String(cell ?? "").trim()))
+    ) {
+      firstDataRow++;
+    }
+    return {
+      index,
+      title: tableTitle(aoa, headerRow, index),
+      headerRow,
+      firstDataRow,
+      endRow: headerRows[index + 1] ?? aoa.length,
+    };
+  });
 }
 
 function rowToFieldDef(
@@ -139,11 +201,19 @@ export function getSheetRowCount(buf: ArrayBuffer, sheetName: string): number {
   return aoa.length;
 }
 
+export function getExcelTableInfos(buf: ArrayBuffer, sheetName: string): ExcelTableInfo[] {
+  const wb = XLSX.read(buf, { type: "array" });
+  const ws = wb.Sheets[sheetName];
+  if (!ws) return [];
+  const aoa: unknown[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
+  return detectTableBlocks(aoa);
+}
+
 // ── Parse layout from Excel ArrayBuffer (auto-detect sheet) ──────────────────
 
 export function parseLayoutFromExcel(
   buf: ArrayBuffer,
-  options?: { sheetName?: string; startRow?: number; endRow?: number }
+  options?: { sheetName?: string; startRow?: number; endRow?: number; tableIndex?: number }
 ): ParseLayoutResult {
   const wb = XLSX.read(buf, { type: "array" });
   const warnings: string[] = [];
@@ -153,7 +223,7 @@ export function parseLayoutFromExcel(
   if (options?.sheetName && wb.SheetNames.includes(options.sheetName)) {
     targetSheet = options.sheetName;
   } else {
-    // Auto-detect: find a sheet that has start/end columns
+    // Auto-detect: find a sheet that contains at least one layout table.
     targetSheet = wb.SheetNames[0];
     for (const name of wb.SheetNames) {
       const ws = wb.Sheets[name];
@@ -161,10 +231,7 @@ export function parseLayoutFromExcel(
         header: 1,
         defval: "",
       });
-      const firstNonEmpty = aoa.find((row) => row.some((c) => String(c).trim()));
-      if (!firstNonEmpty) continue;
-      const colMap = detectColumns(firstNonEmpty.map(String));
-      if (colMap.start && colMap.end) {
+      if (detectTableBlocks(aoa).length > 0) {
         targetSheet = name;
         break;
       }
@@ -179,6 +246,62 @@ export function parseLayoutFromExcel(
 
   // Extract merge info for merged-header detection
   const merges: MergeRange[] = (ws["!merges"] as MergeRange[]) ?? [];
+  const tables = detectTableBlocks(aoa);
+  const requestedStart = options?.startRow !== undefined
+    ? Math.max(0, options.startRow - 1)
+    : 0;
+  const requestedEnd = options?.endRow !== undefined
+    ? Math.min(aoa.length, options.endRow)
+    : aoa.length;
+  const tableIntersectsRequestedRange = (table: ExcelTableInfo) =>
+    (table.headerRow >= requestedStart && table.headerRow < requestedEnd) ||
+    (table.firstDataRow >= requestedStart && table.firstDataRow < requestedEnd);
+  const selectedTable = options?.tableIndex !== undefined
+    ? tables[options.tableIndex]
+    : tables.find(tableIntersectsRequestedRange) ?? tables[0];
+
+  if (selectedTable) {
+    const tableStart = selectedTable.headerRow;
+    const tableEnd = selectedTable.endRow;
+    const parseStart = Math.max(tableStart, requestedStart);
+    const parseEnd = Math.min(tableEnd, requestedEnd);
+    const tableAoa = aoa.slice(parseStart, parseEnd);
+    const tableMerges = merges
+      .filter(m => m.s.r >= parseStart && m.s.r < parseEnd)
+      .map(m => ({
+        s: { r: m.s.r - parseStart, c: m.s.c },
+        e: { r: m.e.r - parseStart, c: m.e.c },
+      }));
+    if (parseStart > tableStart || parseEnd < tableEnd) {
+      warnings.push(`Scanning rows ${parseStart + 1}–${parseEnd} of table ${selectedTable.index + 1}.`);
+    }
+    const result = parseFromAOA(
+      tableAoa,
+      `${targetSheet} · ${selectedTable.title}`,
+      [`Detected table ${selectedTable.index + 1} of ${tables.length}: ${selectedTable.title}`],
+      tableMerges,
+    );
+
+    if (selectedTable.index > 0 && result.fields.length > 0) {
+      const baseTable = tables[0];
+      const baseAoa = aoa.slice(baseTable.headerRow, baseTable.endRow);
+      const baseMerges = merges
+        .filter(m => m.s.r >= baseTable.headerRow && m.s.r < baseTable.endRow)
+        .map(m => ({
+          s: { r: m.s.r - baseTable.headerRow, c: m.s.c },
+          e: { r: m.e.r - baseTable.headerRow, c: m.e.c },
+        }));
+      const baseResult = parseFromAOA(baseAoa, targetSheet, [], baseMerges);
+      const commonFields = baseResult.fields.filter(f => f.end <= 38);
+      result.fields = expandCommonIdRange(result.fields, commonFields);
+      if (commonFields.length > 0) {
+        result.warnings.push(
+          `Expanded Common-ID range 1–38 into ${commonFields.length} shared fields from the first table.`
+        );
+      }
+    }
+    return result;
+  }
 
   // Apply row range if specified (1-indexed, inclusive)
   if (options?.startRow !== undefined || options?.endRow !== undefined) {
@@ -222,7 +345,8 @@ type MergeRange = { s: { r: number; c: number }; e: { r: number; c: number } };
 function expandMergedBytePositionHeaders(
   headerRow: string[],
   rowIdx: number,
-  merges: MergeRange[]
+  merges: MergeRange[],
+  dataRows: unknown[][] = []
 ): string[] {
   const expanded = [...headerRow];
   for (let c = 0; c < headerRow.length; c++) {
@@ -237,10 +361,18 @@ function expandMergedBytePositionHeaders(
         expanded[c] = "Byte Position (Start)";
         expanded[merge.e.c] = "Byte Position (End)";
       } else {
-        // No merge info — assume next blank column is "end"
-        if (c + 1 < headerRow.length && headerRow[c + 1].trim() === "") {
+        // Some workbooks represent "Byte Position" as Start / "-" / End
+        // without storing an Excel merge. Inspect sample data to distinguish
+        // that shape from a simple two-column Start / End layout.
+        const hasThreeColumnShape = dataRows.some(row =>
+          Number.isFinite(Number(row[c])) &&
+          Number.isFinite(Number(row[c + 2])) &&
+          !Number.isFinite(Number(row[c + 1]))
+        );
+        const endColumn = hasThreeColumnShape ? c + 2 : c + 1;
+        if (endColumn < headerRow.length) {
           expanded[c] = "Byte Position (Start)";
-          expanded[c + 1] = "Byte Position (End)";
+          expanded[endColumn] = "Byte Position (End)";
         }
       }
     }
@@ -261,7 +393,7 @@ function parseFromAOA(
   for (let r = 0; r < Math.min(aoa.length, 15); r++) {
     const raw = aoa[r].map(String);
     // Expand merged "Byte Position" headers before detection
-    const row = expandMergedBytePositionHeaders(raw, r, merges);
+    const row = expandMergedBytePositionHeaders(raw, r, merges, aoa.slice(r + 1, r + 6));
     const cm = detectColumns(row);
     if (cm.start !== undefined && cm.end !== undefined) {
       headerRowIdx = r;
@@ -299,6 +431,22 @@ function parseFromAOA(
   }
 
   return { fields, sheetName, warnings };
+}
+
+function expandCommonIdRange(fields: FieldDef[], commonFields: FieldDef[]): FieldDef[] {
+  const expanded: FieldDef[] = [];
+  for (const field of fields) {
+    const isCommonIdRange =
+      nh(field.fullName) === "commonid" &&
+      field.start === 1 &&
+      field.end === 38;
+    if (isCommonIdRange && commonFields.length > 0) {
+      expanded.push(...commonFields.map(shared => ({ ...shared })));
+    } else {
+      expanded.push({ ...field });
+    }
+  }
+  return expanded.map((field, index) => ({ ...field, srlNo: index + 1 }));
 }
 
 // ── Convert FWF text → row objects ───────────────────────────────────────────
@@ -391,7 +539,7 @@ function csvCell(value: string): string {
 
 export async function parseLayoutFile(
   file: File,
-  options?: { sheetName?: string; startRow?: number; endRow?: number }
+  options?: { sheetName?: string; startRow?: number; endRow?: number; tableIndex?: number }
 ): Promise<ParseLayoutResult> {
   const name = file.name.toLowerCase();
   if (name.endsWith(".csv") || name.endsWith(".tsv")) {

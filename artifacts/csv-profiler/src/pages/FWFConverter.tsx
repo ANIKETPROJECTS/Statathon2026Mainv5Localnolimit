@@ -8,7 +8,7 @@ import {
 import folderIcon from "@assets/open-folder_1781738999125.png";
 import {
   parseLayoutFile, readExcelFileInfo, getSheetRowCount, convertFWFToCSV,
-  type FieldDef, type ParseLayoutResult, type ExcelFileInfo,
+  getExcelTableInfos, type FieldDef, type ParseLayoutResult, type ExcelFileInfo,
 } from "@/lib/fwf-parser";
 import {
   encryptFWFToBlob, decryptCSVToBlob, readCSVHeaders,
@@ -32,6 +32,11 @@ interface LayoutEntry {
   result: ParseLayoutResult | null;
   error: string;
 }
+
+type LayoutJob = {
+  sheetName: string;
+  tableIndex?: number;
+};
 
 interface DataFile {
   id: string;
@@ -135,6 +140,19 @@ function blankDataFile(file: File): DataFile {
     encResultKey: null, encResultBlob: null, encError: "",
     exportingFmts: [], origDownloading: false, origProgress: 0,
   };
+}
+
+function layoutJobsForSheets(info: ExcelFileInfo, sheetNames: string[]): LayoutJob[] {
+  const jobs: LayoutJob[] = [];
+  for (const sheetName of sheetNames) {
+    const tables = getExcelTableInfos(info.buf, sheetName);
+    if (tables.length > 0) {
+      for (const table of tables) jobs.push({ sheetName, tableIndex: table.index });
+    } else {
+      jobs.push({ sheetName });
+    }
+  }
+  return jobs;
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
@@ -261,15 +279,29 @@ export default function FWFConverter() {
     if (!lo || lo.selectedSheets.length === 0) return;
     patchLayout(setLayouts, id, { applyingSheet: true, error: "" });
 
-    const [firstSheet, ...extraSheets] = lo.selectedSheets;
     const rowOpts = {
       startRow: lo.rowFrom ? parseInt(lo.rowFrom, 10) : undefined,
       endRow:   lo.rowTo   ? parseInt(lo.rowTo,   10) : undefined,
     };
+    const hasRowRange = Boolean(lo.rowFrom || lo.rowTo);
+    const jobs = lo.excelInfo
+      ? hasRowRange
+        ? lo.selectedSheets.map(sheetName => ({ sheetName }))
+        : layoutJobsForSheets(lo.excelInfo, lo.selectedSheets)
+      : [];
+    if (jobs.length === 0) return;
 
-    // Parse the first selected sheet into the current entry
+    const parseJob = (job: { sheetName: string; tableIndex?: number }) =>
+      parseLayoutFile(lo.file, {
+        sheetName: job.sheetName,
+        ...rowOpts,
+        ...(job.tableIndex !== undefined ? { tableIndex: job.tableIndex } : {}),
+      });
+
+    // Parse the first table into the current entry.
+    const [firstJob, ...extraJobs] = jobs;
     try {
-      const result = await parseLayoutFile(lo.file, { sheetName: firstSheet, ...rowOpts });
+      const result = await parseJob(firstJob);
       patchLayout(setLayouts, id, result.fields.length
         ? { result, sheetSelectOpen: false, applyingSheet: false }
         : { error: result.warnings.join(" ") || "No fields found.", applyingSheet: false });
@@ -278,18 +310,19 @@ export default function FWFConverter() {
       return; // Don't create extra entries if the first fails
     }
 
-    // Parse each additional selected sheet as a new layout entry
-    for (const sheetName of extraSheets) {
+    // Parse each additional table as a new layout entry. This lets each
+    // fixed-width data file use the layout for its own questionnaire level.
+    for (const job of extraJobs) {
       const newEntry: LayoutEntry = {
         id: uid(), file: lo.file, fileName: lo.fileName,
         excelInfo: lo.excelInfo, sheetSelectOpen: false,
-        selectedSheets: [sheetName], rowFrom: lo.rowFrom, rowTo: lo.rowTo,
-        sheetRowCount: lo.excelInfo ? getSheetRowCount(lo.excelInfo.buf, sheetName) : 0,
+        selectedSheets: [job.sheetName], rowFrom: lo.rowFrom, rowTo: lo.rowTo,
+        sheetRowCount: lo.excelInfo ? getSheetRowCount(lo.excelInfo.buf, job.sheetName) : 0,
         applyingSheet: true, result: null, error: "",
       };
       setLayouts(prev => [...prev, newEntry]);
       try {
-        const r = await parseLayoutFile(lo.file, { sheetName, ...rowOpts });
+        const r = await parseJob(job);
         patchLayout(setLayouts, newEntry.id, r.fields.length
           ? { result: r, applyingSheet: false }
           : { error: r.warnings.join(" ") || "No fields found.", applyingSheet: false });
@@ -303,12 +336,52 @@ export default function FWFConverter() {
     const lo = layouts.find(l => l.id === id);
     if (!lo) return;
     patchLayout(setLayouts, id, { applyingSheet: true, error: "" });
+    if (!lo.excelInfo) {
+      try {
+        const result = await parseLayoutFile(lo.file);
+        patchLayout(setLayouts, id, result.fields.length
+          ? { result, sheetSelectOpen: false, applyingSheet: false }
+          : { error: result.warnings.join(" ") || "No fields found.", applyingSheet: false });
+      } catch (e) {
+        patchLayout(setLayouts, id, { error: `Parse error: ${(e as Error).message}`, applyingSheet: false });
+      }
+      return;
+    }
+    const jobs = layoutJobsForSheets(lo.excelInfo, lo.excelInfo.sheetNames);
+    const [firstJob, ...extraJobs] = jobs;
     try {
-      const result = await parseLayoutFile(lo.file);
+      const result = await parseLayoutFile(lo.file, {
+        sheetName: firstJob.sheetName,
+        tableIndex: firstJob.tableIndex,
+      });
       patchLayout(setLayouts, id, result.fields.length
         ? { result, sheetSelectOpen: false, applyingSheet: false }
         : { error: result.warnings.join(" ") || "No fields found.", applyingSheet: false });
-    } catch (e) { patchLayout(setLayouts, id, { error: `Parse error: ${(e as Error).message}`, applyingSheet: false }); }
+      for (const job of extraJobs) {
+        const newEntry: LayoutEntry = {
+          id: uid(), file: lo.file, fileName: lo.fileName,
+          excelInfo: lo.excelInfo, sheetSelectOpen: false,
+          selectedSheets: [job.sheetName],
+          rowFrom: "", rowTo: "",
+          sheetRowCount: getSheetRowCount(lo.excelInfo.buf, job.sheetName),
+          applyingSheet: true, result: null, error: "",
+        };
+        setLayouts(prev => [...prev, newEntry]);
+        try {
+          const r = await parseLayoutFile(lo.file, {
+            sheetName: job.sheetName,
+            tableIndex: job.tableIndex,
+          });
+          patchLayout(setLayouts, newEntry.id, r.fields.length
+            ? { result: r, applyingSheet: false }
+            : { error: r.warnings.join(" ") || "No fields found.", applyingSheet: false });
+        } catch (e) {
+          patchLayout(setLayouts, newEntry.id, { error: `Parse error: ${(e as Error).message}`, applyingSheet: false });
+        }
+      }
+    } catch (e) {
+      patchLayout(setLayouts, id, { error: `Parse error: ${(e as Error).message}`, applyingSheet: false });
+    }
   }, [layouts]);
 
   // "Add Range" — clone same Excel file as a new entry with sheet picker open
