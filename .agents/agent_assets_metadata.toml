@@ -14,3 +14,17 @@ mtime_ms = 1787240936518
 storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:6dcc3020-db1f-4da6-a42a-2e6c0dc07e36/23e9a749-79e8-4002-b37b-c526cab6efa6/3c13b442-5dbe-4a22-9983-6eec6d6cdbfa"
 storage_version_token = "1787240938372089"
 content_type = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+
+[[outputs]]
+id = "-bgZUlFDPK0XefmFzKTe-"
+uri = "file://exe_generator_guide.md"
+type = "text"
+title = "AIRAVATA DEA Desktop Build Guide"
+description = "Windows .exe and native macOS .dmg generation instructions for the Electron desktop app."
+logical_id = "4b827710-fb1c-48e8-90a4-9072ee260953"
+content_hash = "sha256:8f519580ce2b40a2382c26c1b147f63c367e5825a258762a198ee10d18690655"
+size = 6275
+mtime_ms = 1788238425108
+storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:6dcc3020-db1f-4da6-a42a-2e6c0dc07e36/4b827710-fb1c-48e8-90a4-9072ee260953/b65c22ca-96c5-4ea2-8029-4f92ed8a9820"
+storage_version_token = "1788238441955654"
+content_type = "text/markdown"
