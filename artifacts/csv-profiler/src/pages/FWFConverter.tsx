@@ -722,6 +722,14 @@ export default function FWFConverter() {
     });
   }, [layouts]);
 
+  const clearAllEncryptionColumns = useCallback(() => {
+    setCommonSelectedColumns([]);
+    setDataFiles(prev => prev.map(df => df.activated
+      ? { ...df, encColsList: [], encError: "" }
+      : df
+    ));
+  }, []);
+
   // ── Per-file processing ──────────────────────────────────────────────────
 
   const handleEncrypt = useCallback(async (
@@ -1008,6 +1016,18 @@ export default function FWFConverter() {
   const filesMissingColumns = activatedFiles.filter(df => df.encColsList.length === 0);
   const pendingDataFiles = dataFiles.filter(df => !df.activated);
   const allDataFilesReady = dataFiles.length > 1 && dataFiles.every(df => df.layoutId && df.lineCount > 0);
+  const anonymizedFileCount = activatedFiles.filter(df => df.step === "anon-done").length;
+  const currentAnonymizingFile = activatedFiles.find(df => df.encRunning);
+  const overallAnonymizationProgress = activatedFiles.length > 0
+    ? Math.min(100, Math.round((
+      anonymizedFileCount + (currentAnonymizingFile ? currentAnonymizingFile.encProgress / 100 : 0)
+    ) / activatedFiles.length * 100))
+    : 0;
+  const overallAnonymizationLabel = anonymizedFileCount === activatedFiles.length
+    ? `All ${activatedFiles.length} files anonymized`
+    : currentAnonymizingFile
+      ? `Anonymizing ${currentAnonymizingFile.fileName} · ${anonymizedFileCount} of ${activatedFiles.length} files complete`
+      : `${anonymizedFileCount} of ${activatedFiles.length} files anonymized`;
 
   const phase = readyLayouts.length === 0 ? 0 : assignedFiles.length === 0 ? 1 : 2;
 
@@ -1208,11 +1228,21 @@ export default function FWFConverter() {
             />
             {anonMode === "encrypt" && activatedFiles.length > 1 && commonColumnNames.length > 0 && (
               <div className="mt-6 border border-blue-200 bg-blue-50/40 rounded-xl p-5 space-y-3">
-                <div>
-                  <p className="text-sm font-semibold text-blue-950">Common columns across all files</p>
-                  <p className="text-xs text-blue-700 mt-1">
-                    Select a column once to add it to every active file. Columns shown here exist in all {activatedFiles.length} active files.
-                  </p>
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <p className="text-sm font-semibold text-blue-950">Common columns across all files</p>
+                    <p className="text-xs text-blue-700 mt-1">
+                      Select a column once to add it to every active file. Columns shown here exist in all {activatedFiles.length} active files.
+                    </p>
+                  </div>
+                  <button
+                    onClick={clearAllEncryptionColumns}
+                    disabled={batchEncryptRunning || !activatedFiles.some(df => df.encColsList.length > 0)}
+                    className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg border border-blue-300 bg-white text-xs font-semibold text-blue-800 hover:bg-blue-100 disabled:opacity-40 transition-colors whitespace-nowrap"
+                    title="Clear selected columns from every active file, including unique columns"
+                  >
+                    Clear all columns
+                  </button>
                 </div>
                 <ColSelector
                   allCols={commonColumnNames}
@@ -1242,12 +1272,11 @@ export default function FWFConverter() {
                       : <><Layers className="w-4 h-4" />Anonymize all files</>}
                   </button>
                 </div>
-                {batchEncryptRunning && (
-                  <ProgressBar
-                    pct={Math.round((batchEncryptIndex / activatedFiles.length) * 100)}
-                    label={`Completed ${Math.max(0, batchEncryptIndex - 1)} of ${activatedFiles.length} files`}
-                  />
-                )}
+                <ProgressBar
+                  pct={overallAnonymizationProgress}
+                  label={overallAnonymizationLabel}
+                  icon={batchEncryptRunning ? <Spin /> : overallAnonymizationProgress === 100 ? <CheckCircle2 className="w-4 h-4 text-emerald-600" /> : undefined}
+                />
               </div>
             )}
           </div>
