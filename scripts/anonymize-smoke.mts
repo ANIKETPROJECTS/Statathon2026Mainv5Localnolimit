@@ -1,5 +1,6 @@
 import {
   decryptCSVToBlob,
+  decryptCSVFileToStream,
   encryptFWFToBlob,
   encryptFWFFileToStream,
   type AnonymizeOptions,
@@ -76,6 +77,28 @@ const streamedText = new TextDecoder().decode(
   Buffer.concat(streamChunks.map(chunk => Buffer.from(chunk))),
 );
 assert(streamedText === deterministic1.encryptedText, "streaming output differs from compact export");
+
+const streamedDecrypt = decryptCSVFileToStream(
+  new File([streamedText], "streamed.csv"),
+  new Set(["A", "C"]),
+  base,
+  () => {},
+);
+const decryptReader = streamedDecrypt.stream.getReader();
+const decryptChunks: Uint8Array[] = [];
+try {
+  while (true) {
+    const next = await decryptReader.read();
+    if (next.done) break;
+    decryptChunks.push(next.value);
+  }
+} finally {
+  decryptReader.releaseLock();
+}
+const streamedDecryptedText = new TextDecoder().decode(
+  Buffer.concat(decryptChunks.map(chunk => Buffer.from(chunk))),
+);
+assert(streamedDecryptedText === expected, "streaming decrypt round trip failed");
 
 const selective = await roundTrip({ ...base, deterministic: false }, "subset");
 const selectiveLines = selective.decryptedText.trimEnd().split("\n");

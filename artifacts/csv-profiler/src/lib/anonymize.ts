@@ -537,7 +537,7 @@ interface FastDeterministicCipher {
   rounds: FastFpeLookup[];
 }
 
-function buildFastFpeLookup(ksBytes: Uint8Array): FastFpeLookup {
+function buildFastFpeLookup(ksBytes: Uint8Array, inverse = false): FastFpeLookup {
   // New compact files use DET_KS_SIZE, which supports the normal fixed-width
   // field limit of 256 characters. Lookup tables replace 20 arithmetic FPE
   // operations per character with one typed-array lookup per round.
@@ -549,8 +549,11 @@ function buildFastFpeLookup(ksBytes: Uint8Array): FastFpeLookup {
       for (let input = 0; input < size; input++) {
         let value = input;
         for (let op = 0; op < 5; op++) {
-          const k = ksBytes[(pos * 5 + op) % ksBytes.length];
-          value = applyOpFwd(value, k, size, muls);
+          const keyOffset = inverse ? 4 - op : op;
+          const k = ksBytes[(pos * 5 + keyOffset) % ksBytes.length];
+          value = inverse
+            ? applyOpInv(value, k, size, muls)
+            : applyOpFwd(value, k, size, muls);
         }
         table[input] = value;
       }
@@ -612,13 +615,62 @@ function encryptFpeLookupRound(
 }
 
 function buildFastDeterministicCipher(ksArr: Uint8Array[]): FastDeterministicCipher {
-  return { rounds: ksArr.map(buildFastFpeLookup) };
+  return { rounds: ksArr.map(ks => buildFastFpeLookup(ks)) };
 }
 
 function encryptChain4Fast(cipher: FastDeterministicCipher, value: string): string {
   let result = value;
   for (const lookup of cipher.rounds) {
     result = encryptFpeLookupRound(lookup, result);
+  }
+  return result;
+}
+
+function decryptFpeLookupRound(lookup: FastFpeLookup, value: string): string {
+  for (let i = 0; i < value.length; i++) {
+    if (value.charCodeAt(i) > 0x7f) return decryptFPECell(lookup.ksBytes, value);
+  }
+
+  let output = "";
+  for (let pos = 0; pos < value.length; pos++) {
+    const code = value.charCodeAt(pos);
+    if (pos >= lookup.digit10.length) {
+      return decryptFPECell(lookup.ksBytes, value);
+    }
+
+    if (pos === 0 && code >= 48 && code <= 57) {
+      if (code === 48) {
+        output += value[pos];
+      } else {
+        output += String.fromCharCode(lookup.digit9[pos][code - 49] + 49);
+      }
+      continue;
+    }
+
+    if (code >= 48 && code <= 57) {
+      output += String.fromCharCode(lookup.digit10[pos][code - 48] + 48);
+    } else if (code >= 65 && code <= 90) {
+      output += String.fromCharCode(lookup.upper26[pos][code - 65] + 65);
+    } else if (code >= 97 && code <= 122) {
+      output += String.fromCharCode(lookup.lower26[pos][code - 97] + 97);
+    } else {
+      const symbolIndex = SYMBOL_CHARS.indexOf(value[pos]);
+      output += symbolIndex === -1
+        ? value[pos]
+        : SYMBOL_CHARS[lookup.symbols33[pos][symbolIndex]];
+    }
+  }
+  return output;
+}
+
+function buildFastDecryptCipher(ksArr: Uint8Array[]): FastDeterministicCipher {
+  return { rounds: ksArr.map(ks => buildFastFpeLookup(ks, true)) };
+}
+
+function decryptChain4Fast(cipher: FastDeterministicCipher, value: string): string {
+  let result = value;
+  for (let i = cipher.rounds.length - 1; i >= 0; i--) {
+    result = decryptFpeLookupRound(cipher.rounds[i], result);
   }
   return result;
 }
@@ -1270,6 +1322,7 @@ export async function encryptFWFToBlob(
 export interface AnonymizeStreamResult {
   stream: ReadableStream<Uint8Array>;
   keyHex: string;
+  previewRows: string[][];
 }
 
 function readableStreamFromTextGenerator(
@@ -1338,6 +1391,7 @@ export async function encryptFWFFileToStream(
   }
 
   await computeKeyFingerprint(keyChain);
+  const previewRows: string[][] = [];
   const generator = (async function* () {
     let output = fields.map(f => csvEscape(f.varName)).join(",") + "\n";
     let firstNonEmpty = true;
@@ -1368,6 +1422,7 @@ export async function encryptFWFFileToStream(
       }
 
       const csvCells: string[] = [];
+      const rowValues: string[] = [];
       for (const f of fields) {
         let val = line.substring(f.start - 1, f.end).trim();
 
@@ -1407,9 +1462,11 @@ export async function encryptFWFFileToStream(
           }
         }
 
+        rowValues.push(val);
         csvCells.push(csvEscape(val));
       }
 
+      if (previewRows.length < 500) previewRows.push(rowValues);
       output += csvCells.join(",") + "\n";
       if (output.length >= 256 * 1024) {
         const chunk = output;
@@ -1422,7 +1479,147 @@ export async function encryptFWFFileToStream(
     onProgress(100);
   })();
 
-  return { stream: readableStreamFromTextGenerator(generator), keyHex };
+  return { stream: readableStreamFromTextGenerator(generator), keyHex, previewRows };
+}
+
+export interface DecryptStreamResult {
+  stream: ReadableStream<Uint8Array>;
+  headers: string[];
+}
+
+/**
+ * Decrypt the current compact CSV format directly from a local File. This is
+ * the decryption counterpart to encryptFWFFileToStream: it keeps only the
+ * current CSV line, a bounded repeated-value cache, and the output buffer.
+ */
+export function decryptCSVFileToStream(
+  file: File,
+  decCols: ReadonlySet<string>,
+  options: AnonymizeOptions,
+  onProgress: (pct: number) => void,
+): DecryptStreamResult {
+  const keyChain = resolveKeyChain(options);
+  const colKs4: Record<string, Uint8Array[]> = {};
+  const colCiphers: Record<string, FastDeterministicCipher> = {};
+
+  if (options.deterministic) {
+    for (const col of decCols) {
+      colKs4[col] = keyChain.map(kh =>
+        makeCellKsBytes(DET_KS_SIZE, kh, hashColIV(kh, col))
+      );
+      colCiphers[col] = buildFastDecryptCipher(colKs4[col]);
+    }
+  }
+
+  const alnumKey = options.alphanumericOutput ? deriveAlnumKey(keyChain) : "";
+  const colAlnumKs: Record<string, Uint8Array> = {};
+  if (options.alphanumericOutput) {
+    for (const col of decCols) {
+      colAlnumKs[col] = makeCellKsBytes(
+        DET_KS_SIZE, alnumKey, hashColIV(alnumKey, col)
+      );
+    }
+  }
+
+  const headers: string[] = [];
+  const generator = (async function* () {
+    let output = "";
+    let headerRead = false;
+    const ivCounters: Record<string, number> = {};
+    const deterministicCache = new Map<string, string>();
+    const deterministicCacheLimit = 500_000;
+    let lastProgress = -1;
+
+    const emitProgress = (bytesRead: number) => {
+      const next = file.size > 0
+        ? Math.min(99, Math.round((bytesRead / file.size) * 100))
+        : 0;
+      if (next !== lastProgress) {
+        lastProgress = next;
+        onProgress(next);
+      }
+    };
+
+    for await (const line of iterateTextFileLines(file, emitProgress)) {
+      if (line.trim().length === 0) continue;
+
+      if (!headerRead) {
+        if (line.trimStart().startsWith("#")) {
+          if (line.includes("AIRAVATA-FORMAT: v2") || line.includes("AIRAVATA-FORMAT: v3")) {
+            throw new Error(
+              "This legacy salted export requires the compatibility decryption path and cannot be streamed safely."
+            );
+          }
+          continue;
+        }
+        headers.push(...splitCSVLine(line));
+        if (headers.length === 0) throw new Error("No CSV headers found.");
+        output += headers.map(csvEscape).join(",") + "\n";
+        headerRead = true;
+        continue;
+      }
+
+      if (line.trimStart().startsWith("#")) continue;
+      const cells = splitCSVLine(line);
+      const outCells: string[] = [];
+
+      for (let ci = 0; ci < headers.length; ci++) {
+        const col = headers[ci];
+        let val = cells[ci] ?? "";
+
+        if (decCols.has(col) && val.length > 0) {
+          if (options.deterministic) {
+            const cacheKey = `${col}\x00${val}`;
+            const cached = deterministicCache.get(cacheKey);
+            if (cached !== undefined) {
+              deterministicCache.delete(cacheKey);
+              deterministicCache.set(cacheKey, cached);
+              val = cached;
+            } else {
+              if (options.alphanumericOutput) {
+                val = decryptAlphanumCell(colAlnumKs[col], val);
+              }
+              val = decryptChain4Fast(colCiphers[col], val);
+              if (deterministicCache.size >= deterministicCacheLimit) {
+                const oldest = deterministicCache.keys().next().value;
+                if (oldest !== undefined) deterministicCache.delete(oldest);
+              }
+              deterministicCache.set(cacheKey, val);
+            }
+          } else {
+            ivCounters[col] = ((ivCounters[col] ?? 0) + 1) >>> 0;
+            const columnSeed = hashColIV(keyChain[0], col);
+            const ksArr = keyChain.map((kh, ri) =>
+              makeCellKsBytes(
+                ksSize(val.length),
+                kh,
+                (ivCounters[col] ^ columnSeed ^ (ri * 0x12345679)) >>> 0,
+              )
+            );
+            if (options.alphanumericOutput) {
+              val = decryptAlphanumCell(colAlnumKs[col], val);
+            }
+            val = decryptChain4(ksArr, val);
+          }
+        }
+
+        outCells.push(csvEscape(val));
+      }
+
+      output += outCells.join(",") + "\n";
+      if (output.length >= 256 * 1024) {
+        const chunk = output;
+        output = "";
+        yield chunk;
+      }
+    }
+
+    if (!headerRead) throw new Error("Empty CSV file.");
+    if (output) yield output;
+    onProgress(100);
+  })();
+
+  return { stream: readableStreamFromTextGenerator(generator), headers };
 }
 
 // ── Streaming decrypt: CSV text → decrypted CSV Blob ─────────────────────────

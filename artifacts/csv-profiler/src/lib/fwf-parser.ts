@@ -581,7 +581,7 @@ export async function scanFWFFile(
     if (line.length === 0) continue;
     if (!firstNonEmpty) firstNonEmpty = line;
     lineCount++;
-    if (previewLines.length < 10) previewLines.push(line);
+    if (previewLines.length < 500) previewLines.push(line);
   }
 
   const hasCsvHeader = firstNonEmpty.includes(",");

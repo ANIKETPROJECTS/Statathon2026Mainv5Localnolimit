@@ -3,7 +3,7 @@ name: Streaming encryption performance
 description: Performance constraints for local streaming anonymisation of very large fixed-width files.
 ---
 
-Deterministic fixed-width anonymisation must reuse per-column keystream state and compiled character transforms rather than deriving a keystream for every record. Progress callbacks must also be throttled to meaningful percentage changes.
+Deterministic fixed-width anonymisation must reuse per-column keystream state and compiled character transforms rather than deriving a keystream for every record. Inverse lookup tables must apply FPE operations in reverse order. Progress callbacks must also be throttled to meaningful percentage changes.
 
 **Why:** On gigabyte-scale files, per-record key-stream generation and per-chunk React updates dominate runtime even when only one column is selected.
 
