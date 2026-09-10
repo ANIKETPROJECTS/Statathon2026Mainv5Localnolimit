@@ -1,5 +1,7 @@
 # AIRAVATA DEA — Software Usage Steps
 
+> **Screenshot formatting note:** Add the screenshot shown below after each corresponding step when this guide is formatted. The screenshot names are suggested names for the final documentation package. The home-page screenshot is already included; the remaining screenshots should be captured after completing each action in the application.
+
 ## 1. Open the application
 
 1. Open AIRAVATA DEA in the browser or desktop application.
@@ -8,6 +10,9 @@
    - Upload layout files.
    - Assign layouts to fixed-width data files.
    - Select columns and anonymise, decrypt, or export the data.
+
+**Screenshot for Step 1:** `screenshots/software-guide-home.jpg`  
+**Caption:** AIRAVATA DEA home page showing the layout upload, data file, and process workflow.
 
 ---
 
@@ -31,6 +36,9 @@ For Excel layouts:
 - Select only the sheets or tables that should be imported.
 - If required, enter the manual row range for the layout table.
 
+**Screenshot for Step 2:** `screenshots/02-prepared-input-files.png`  
+**Caption:** Example layout file and fixed-width data file prepared before upload.
+
 ---
 
 ## 3. Upload the layout file
@@ -48,6 +56,9 @@ For Excel layouts:
 
 Repeat these steps if different data files require different layouts.
 
+**Screenshot for Step 3:** `screenshots/03-upload-layout-file.png`  
+**Caption:** Step 1 — Layout files showing an uploaded layout, selected sheet or table, and confirmed field boundaries.
+
 ---
 
 ## 4. Upload the fixed-width data file
@@ -62,6 +73,9 @@ Repeat these steps if different data files require different layouts.
 
 The data file must be assigned to a layout before it can be processed.
 
+**Screenshot for Step 4:** `screenshots/04-upload-data-file.png`  
+**Caption:** Step 2 — Data files showing an uploaded fixed-width file assigned to a layout.
+
 ---
 
 ## 5. Choose the output folder
@@ -71,6 +85,9 @@ The data file must be assigned to a layout before it can be processed.
 3. If an output folder is not selected, use the normal browser download option when it is available.
 
 For large files, selecting an output folder is recommended because the application can write the result in chunks instead of keeping the complete result in memory.
+
+**Screenshot for Step 5:** `screenshots/05-choose-output-folder.png`  
+**Caption:** Step 3 showing the Choose output folder control and the selected output location.
 
 ---
 
@@ -107,6 +124,9 @@ Also confirm the following settings:
 
 The key, column name, key mode, deterministic setting, alphanumeric setting, and diffusion setting must match for successful decryption.
 
+**Screenshot for Step 6:** `screenshots/06-key-settings.png`  
+**Caption:** Key settings panel showing key mode, deterministic mode, alphanumeric output, and strong whole-value diffusion.
+
 ---
 
 ## 7. Anonymise selected columns
@@ -126,6 +146,9 @@ The key, column name, key mode, deterministic setting, alphanumeric setting, and
 
 The transformation preserves field length and character class while changing the selected values. Large files are processed in chunks.
 
+**Screenshot for Step 7:** `screenshots/07-anonymise-columns.png`  
+**Caption:** Selected columns and the Apply 4-round FPE anonymization button before processing.
+
 ---
 
 ## 8. Review the anonymisation result
@@ -144,6 +167,9 @@ After encryption is complete:
 
 Available export formats may include CSV, Excel, JSON, or other formats shown in the download panel.
 
+**Screenshot for Step 8:** `screenshots/08-anonymisation-result.png`  
+**Caption:** Completed anonymisation showing the key panel, download options, and View side by side button.
+
 ---
 
 ## 9. Decrypt an anonymised file using the normal workflow
@@ -160,6 +186,9 @@ Use this process when the anonymised file is associated with an uploaded fixed-w
 8. Review the decrypted preview.
 9. Download the restored CSV.
 10. Use **View side by side** to compare encrypted and decrypted values if required.
+
+**Screenshot for Step 9:** `screenshots/09-normal-decryption.png`  
+**Caption:** Decryption workflow showing the selected columns and the Apply 4-round FPE decryption button.
 
 ---
 
@@ -178,6 +207,9 @@ Use this option when an AIRAVATA DEA anonymised CSV is already available.
 9. Use **View side by side** to compare encrypted and decrypted values.
 
 If the file was created with the legacy compact format, disable **Strong whole-value diffusion** before decrypting.
+
+**Screenshot for Step 10:** `screenshots/10-direct-csv-decryption.png`  
+**Caption:** Direct CSV decryption panel showing the uploaded encrypted CSV, selected columns, and decryption controls.
 
 ---
 
@@ -217,6 +249,9 @@ Use Risk Assessment to check how easily records can be identified from selected 
 5. Review whether anonymisation reduced re-identification risk.
 6. Download the required reports.
 
+**Screenshot for Step 11:** `screenshots/11-risk-assessment.png`  
+**Caption:** Risk Assessment page showing file upload, quasi-identifier selection, sensitive-attribute selection, and analysis parameters.
+
 ---
 
 ## 12. Interpret the risk result
@@ -228,6 +263,9 @@ Use Risk Assessment to check how easily records can be identified from selected 
 - **Minimum k**: the size of the smallest group sharing the same quasi-identifier values.
 
 Risk assessment does not anonymise or decrypt files. It only analyses the uploaded dataset.
+
+**Screenshot for Step 12:** `screenshots/12-risk-assessment-results.png`  
+**Caption:** Prosecutor Attack results showing risk percentage, unique records, minimum k, and record-level attack trace.
 
 ---
 
@@ -243,6 +281,9 @@ Risk assessment does not anonymise or decrypt files. It only analyses the upload
 8. Disable strong whole-value diffusion only when decrypting a compatible legacy file.
 9. Keep the original data and anonymised data in separate locations.
 10. Verify the output with a preview or side-by-side comparison before sharing it.
+
+**Screenshot for Step 13:** `screenshots/13-key-and-file-safety.png`  
+**Caption:** Completed output showing the saved key controls and the comparison or download options.
 
 ---
 
@@ -263,3 +304,6 @@ Risk assessment does not anonymise or decrypt files. It only analyses the upload
 13. Run Risk Assessment on the anonymised file.
 14. Compare the two risk results.
 15. Share only the verified output and the required report.
+
+**Screenshot for Step 14:** `screenshots/14-complete-workflow.png`  
+**Caption:** Final completed workflow showing the anonymised output and risk-assessment results.
