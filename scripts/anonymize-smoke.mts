@@ -1,6 +1,7 @@
 import {
   decryptCSVToBlob,
   encryptFWFToBlob,
+  encryptFWFFileToStream,
   type AnonymizeOptions,
   type FieldSpec,
 } from "../artifacts/csv-profiler/src/lib/anonymize.ts";
@@ -52,6 +53,29 @@ assert(
   deterministic1.encryptedText.split(/\r?\n/).every(line => !line.trimStart().startsWith("#")),
   "compact export contains a comment line"
 );
+
+const streamed = await encryptFWFFileToStream(
+  new File([raw], "stream-sample.txt"),
+  fields,
+  new Set(["A", "C"]),
+  base,
+  () => {},
+);
+const streamReader = streamed.stream.getReader();
+const streamChunks: Uint8Array[] = [];
+try {
+  while (true) {
+    const next = await streamReader.read();
+    if (next.done) break;
+    streamChunks.push(next.value);
+  }
+} finally {
+  streamReader.releaseLock();
+}
+const streamedText = new TextDecoder().decode(
+  Buffer.concat(streamChunks.map(chunk => Buffer.from(chunk))),
+);
+assert(streamedText === deterministic1.encryptedText, "streaming output differs from compact export");
 
 const selective = await roundTrip({ ...base, deterministic: false }, "subset");
 const selectiveLines = selective.decryptedText.trimEnd().split("\n");

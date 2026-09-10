@@ -528,6 +528,142 @@ export async function convertFWFToCSV(
   return new Blob(chunks, { type: "text/csv;charset=utf-8;" });
 }
 
+export interface FileScanResult {
+  lineCount: number;
+  previewLines: string[];
+  hasCsvHeader: boolean;
+}
+
+export type StreamProgress = (bytesRead: number, totalBytes: number) => void;
+
+/**
+ * Read a local file incrementally. The file remains in its original location;
+ * only one decoded line at a time is held by the parser.
+ */
+export async function* iterateTextFileLines(
+  file: File,
+  onProgress?: StreamProgress,
+): AsyncGenerator<string> {
+  const reader = file.stream().getReader();
+  const decoder = new TextDecoder();
+  let pending = "";
+  let bytesRead = 0;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytesRead += value.byteLength;
+      onProgress?.(bytesRead, file.size);
+
+      const text = decoder.decode(value, { stream: true });
+      const parts = (pending + text).split(/\r?\n/);
+      pending = parts.pop() ?? "";
+      for (const line of parts) yield line;
+    }
+
+    pending += decoder.decode();
+    if (pending.length > 0) yield pending;
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+export async function scanFWFFile(
+  file: File,
+  onProgress?: StreamProgress,
+): Promise<FileScanResult> {
+  let lineCount = 0;
+  let firstNonEmpty = "";
+  const previewLines: string[] = [];
+
+  for await (const line of iterateTextFileLines(file, onProgress)) {
+    if (line.length === 0) continue;
+    if (!firstNonEmpty) firstNonEmpty = line;
+    lineCount++;
+    if (previewLines.length < 10) previewLines.push(line);
+  }
+
+  const hasCsvHeader = firstNonEmpty.includes(",");
+  return {
+    lineCount: hasCsvHeader ? Math.max(0, lineCount - 1) : lineCount,
+    previewLines: hasCsvHeader ? previewLines.slice(1) : previewLines,
+    hasCsvHeader,
+  };
+}
+
+export interface StreamBlobOptions extends ConvertOptions {
+  onBytesProgress?: StreamProgress;
+}
+
+function readableStreamFromGenerator(
+  generator: AsyncGenerator<string>,
+): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const next = await generator.next();
+        if (next.done) {
+          controller.close();
+        } else {
+          controller.enqueue(encoder.encode(next.value));
+        }
+      } catch (error) {
+        controller.error(error);
+      }
+    },
+    async cancel() {
+      await generator.return(undefined);
+    },
+  });
+}
+
+/** Convert a fixed-width local file without building a full input string. */
+export function convertFWFFileToStream(
+  file: File,
+  fields: FieldDef[],
+  options: StreamBlobOptions = {},
+): ReadableStream<Uint8Array> {
+  const generator = (async function* () {
+    const header = fields.map((f) => csvCell(f.varName)).join(",");
+    let output = `${header}\n`;
+    let dataLineCount = 0;
+    let firstNonEmpty = true;
+    let hasCsvHeader = false;
+
+    const flush = async function* () {
+      if (output.length >= 256 * 1024) {
+        const chunk = output;
+        output = "";
+        yield chunk;
+      }
+    };
+
+    for await (const line of iterateTextFileLines(file, options.onBytesProgress)) {
+      if (line.length === 0) continue;
+      if (firstNonEmpty) {
+        firstNonEmpty = false;
+        hasCsvHeader = line.includes(",");
+        if (hasCsvHeader) continue;
+      }
+      const cells = fields.map((f) => {
+        const raw = line.padEnd(f.end).substring(f.start - 1, f.end);
+        return csvCell(raw.trim());
+      });
+      output += `${cells.join(",")}\n`;
+      dataLineCount++;
+      options.onProgress?.(Math.min(99, Math.round((dataLineCount / Math.max(1, dataLineCount + 1)) * 100)));
+      yield* flush();
+    }
+
+    if (output) yield output;
+    options.onProgress?.(100);
+  })();
+
+  return readableStreamFromGenerator(generator);
+}
+
 function csvCell(value: string): string {
   if (value.includes(",") || value.includes('"') || value.includes("\n")) {
     return `"${value.replace(/"/g, '""')}"`;

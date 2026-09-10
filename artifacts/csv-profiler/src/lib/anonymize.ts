@@ -6,6 +6,8 @@
 // Each alphanumeric character passes through 5 independent micro-operations per round,
 // consuming 5 keystream bytes. Non-alphanumeric characters are passed through unchanged
 // (consuming 5 keystream bytes to keep offsets aligned).
+import { iterateTextFileLines } from "./fwf-parser";
+
 //
 // FORMAT VERSIONS
 // ───────────────
@@ -1164,6 +1166,126 @@ export async function encryptFWFToBlob(
     exportSalt: "",
     auditLog,
   };
+}
+
+export interface AnonymizeStreamResult {
+  stream: ReadableStream<Uint8Array>;
+  keyHex: string;
+}
+
+function readableStreamFromTextGenerator(
+  generator: AsyncGenerator<string>,
+): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const next = await generator.next();
+        if (next.done) controller.close();
+        else controller.enqueue(encoder.encode(next.value));
+      } catch (error) {
+        controller.error(error);
+      }
+    },
+    async cancel() {
+      await generator.return(undefined);
+    },
+  });
+}
+
+/**
+ * Encrypt a local fixed-width file without first materialising it as a string.
+ * The returned stream can be written directly to a local output file.
+ */
+export async function encryptFWFFileToStream(
+  file: File,
+  fields: FieldSpec[],
+  encCols: ReadonlySet<string>,
+  options: AnonymizeOptions,
+  onProgress: (pct: number) => void,
+): Promise<AnonymizeStreamResult> {
+  const keyChain = resolveKeyChain(options);
+  const keyHex = options.keyMode === "hex"
+    ? (options.keyHex ?? "").toLowerCase().trim()
+    : keyChain[0];
+  const alnumKey = options.alphanumericOutput ? deriveAlnumKey(keyChain) : "";
+  const colAlnumKs: Record<string, Uint8Array> = {};
+
+  if (options.alphanumericOutput) {
+    for (const f of fields) {
+      if (encCols.has(f.varName)) {
+        colAlnumKs[f.varName] = makeCellKsBytes(
+          DET_KS_SIZE,
+          alnumKey,
+          hashColIV(alnumKey, f.varName),
+        );
+      }
+    }
+  }
+
+  await computeKeyFingerprint(keyChain);
+  const generator = (async function* () {
+    let output = fields.map(f => csvEscape(f.varName)).join(",") + "\n";
+    let firstNonEmpty = true;
+    const ivCounters: Record<string, number> = {};
+
+    const flush = async function* () {
+      if (output.length >= 256 * 1024) {
+        const chunk = output;
+        output = "";
+        yield chunk;
+      }
+    };
+
+    for await (const line of iterateTextFileLines(file, (read, total) => {
+      onProgress(total > 0 ? Math.min(99, Math.round((read / total) * 100)) : 0);
+    })) {
+      if (line.length === 0) continue;
+      if (firstNonEmpty) {
+        firstNonEmpty = false;
+        if (line.includes(",")) continue;
+      }
+
+      const csvCells: string[] = [];
+      for (const f of fields) {
+        let val = line.padEnd(f.end).substring(f.start - 1, f.end).trim();
+
+        if (encCols.has(f.varName) && val.length > 0) {
+          if (options.deterministic) {
+            const ksArr = keyChain.map(kh =>
+              makeCellKsBytes(DET_KS_SIZE, kh, hashColIV(kh, f.varName))
+            );
+            val = encryptChain4(ksArr, val);
+          } else {
+            ivCounters[f.varName] = ((ivCounters[f.varName] ?? 0) + 1) >>> 0;
+            const columnSeed = hashColIV(keyChain[0], f.varName);
+            const ksArr = keyChain.map((kh, ri) =>
+              makeCellKsBytes(
+                ksSize(val.length),
+                kh,
+                (ivCounters[f.varName] ^ columnSeed ^ (ri * 0x12345679)) >>> 0,
+              )
+            );
+            val = encryptChain4(ksArr, val);
+          }
+
+          if (options.alphanumericOutput) {
+            val = encryptAlphanumCell(colAlnumKs[f.varName], val);
+          }
+        }
+
+        csvCells.push(csvEscape(val));
+      }
+
+      output += csvCells.join(",") + "\n";
+      yield* flush();
+    }
+
+    if (output) yield output;
+    onProgress(100);
+  })();
+
+  return { stream: readableStreamFromTextGenerator(generator), keyHex };
 }
 
 // ── Streaming decrypt: CSV text → decrypted CSV Blob ─────────────────────────

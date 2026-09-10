@@ -1935,13 +1935,13 @@ export function GuideSection() {
                     <div>combinedSeed = key[0..7] ⊕ Column IV</div>
                     <div className="pl-4">
                       = <span className="text-blue-600">{trace.keys[encRoundIdx].slice(0,8)}</span> ⊕ <span className="text-teal-600">0x{trace.colIVs[encRoundIdx].toString(16).toUpperCase().padStart(8,"0")}</span><br/>
-                      = <span className="text-green-700">0x{combinedSeed.toString(16).toUpperCase().padStart(8,"0")}</span>
+                      = <span className="text-green-700">0x{((parseInt(trace.keys[encRoundIdx].slice(0,8), 16) ^ trace.colIVs[encRoundIdx]) >>> 0).toString(16).toUpperCase().padStart(8,"0")}</span>
                     </div>
                     <div>PRNG state = xorshift128+(combinedSeed)</div>
                     <div className="pl-4">
-                      a = <span className="text-indigo-700">0x{aInit.toString(16).toUpperCase().padStart(8,"0")}</span>
+                      a = <span className="text-indigo-700">0x{(((parseInt(trace.keys[encRoundIdx].slice(0,8), 16) ^ trace.colIVs[encRoundIdx]) >>> 0 ^ 0x9e3779b9) >>> 0).toString(16).toUpperCase().padStart(8,"0")}</span>
                       {" · "}
-                      b = <span className="text-rose-700">0x{bInit.toString(16).toUpperCase().padStart(8,"0")}</span>
+                      b = <span className="text-rose-700">0x{(((parseInt(trace.keys[encRoundIdx].slice(0,8), 16) ^ trace.colIVs[encRoundIdx]) >>> 0 ^ 0x6c62272e) >>> 0).toString(16).toUpperCase().padStart(8,"0")}</span>
                     </div>
                   </div>
                 </div>

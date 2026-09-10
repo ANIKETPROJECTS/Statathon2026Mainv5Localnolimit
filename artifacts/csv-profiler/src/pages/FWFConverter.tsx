@@ -8,10 +8,11 @@ import {
 import folderIcon from "@assets/open-folder_1781738999125.png";
 import {
   parseLayoutFile, readExcelFileInfo, getSheetRowCount, convertFWFToCSV,
+  convertFWFFileToStream, scanFWFFile,
   getExcelTableInfos, type FieldDef, type ParseLayoutResult, type ExcelFileInfo, type ExcelTableInfo,
 } from "@/lib/fwf-parser";
 import {
-  encryptFWFToBlob, decryptCSVToBlob, readCSVHeaders,
+  encryptFWFToBlob, encryptFWFFileToStream, decryptCSVToBlob, readCSVHeaders,
   type AnonymizeOptions,
 } from "@/lib/anonymize";
 import { exportAs, EXPORT_FORMATS, type ExportFormat } from "@/lib/format-export";
@@ -54,8 +55,12 @@ type LayoutJob = {
 
 interface DataFile {
   id: string;
+  file: File;
   fileName: string;
-  text: string;
+  text: string | null;
+  rawPreviewLines: string[];
+  fileSize: number;
+  streaming: boolean;
   lineCount: number;
   layoutId: string;
   preview: string[][];
@@ -69,6 +74,8 @@ interface DataFile {
   encProgress: number;
   encResultKey: string | null;
   encResultBlob: Blob | null;
+  encOutputSaved: boolean;
+  encOutputName: string;
   encError: string;
   exportingFmts: string[];
   origDownloading: boolean;
@@ -77,7 +84,7 @@ interface DataFile {
 
 type DirectoryHandle = {
   getFileHandle(name: string, options?: { create?: boolean }): Promise<{
-    createWritable(): Promise<{ write(data: Blob): Promise<void>; close(): Promise<void> }>;
+    createWritable(): Promise<{ write(data: Blob | Uint8Array): Promise<void>; close(): Promise<void> }>;
   }>;
 };
 
@@ -85,7 +92,16 @@ declare global {
   interface Window {
     desktopAPI?: {
       chooseOutputFolder: () => Promise<string | null>;
+      createOutputFile: (folder: string, name: string) => Promise<string>;
+      writeOutputChunk: (id: string, chunk: Uint8Array) => Promise<void>;
+      closeOutputFile: (id: string) => Promise<void>;
     };
+    showSaveFilePicker?: (options?: {
+      suggestedName?: string;
+      types?: Array<{ description: string; accept: Record<string, string[]> }>;
+    }) => Promise<{
+      createWritable(): Promise<{ write(data: Blob | Uint8Array): Promise<void>; close(): Promise<void> }>;
+    }>;
   }
 }
 
@@ -94,6 +110,8 @@ type AnonMode = "encrypt" | "decrypt";
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function uid() { return Math.random().toString(36).slice(2, 10); }
+
+const STREAMING_FILE_THRESHOLD = 100 * 1024 * 1024;
 
 function parseCSVLine(line: string): string[] {
   const cells: string[] = [];
@@ -146,12 +164,13 @@ function patchFile(
 
 function blankDataFile(file: File): DataFile {
   return {
-    id: uid(), fileName: file.name, text: "", lineCount: 0,
+    id: uid(), file, fileName: file.name, text: null, rawPreviewLines: [],
+    fileSize: file.size, streaming: file.size >= STREAMING_FILE_THRESHOLD, lineCount: 0,
     layoutId: "", preview: [], showPreview: false,
     outputBaseName: file.name.replace(/\.[^.]+$/, ""), error: "",
     activated: false, step: "ready", encColsList: [],
     encRunning: false, encProgress: 0,
-    encResultKey: null, encResultBlob: null, encError: "",
+    encResultKey: null, encResultBlob: null, encOutputSaved: false, encOutputName: "", encError: "",
     exportingFmts: [], origDownloading: false, origProgress: 0,
   };
 }
@@ -242,28 +261,30 @@ export default function FWFConverter() {
     alphanumericOutput: anonAlphanumeric,
   });
 
-  const chooseOutputDirectory = useCallback(async () => {
+  const chooseOutputDirectory = useCallback(async (): Promise<DirectoryHandle | null> => {
     if (window.desktopAPI) {
       const selectedPath = await window.desktopAPI.chooseOutputFolder();
       if (selectedPath) {
         setOutputDirectoryName(selectedPath);
         setOutputDirectory(null);
       }
-      return;
+      return null;
     }
     const picker = (window as Window & {
       showDirectoryPicker?: () => Promise<DirectoryHandle>;
     }).showDirectoryPicker;
     if (!picker) {
       alert("Folder output requires Chrome or Edge. Downloads will be used instead.");
-      return;
+      return null;
     }
     try {
       const handle = await picker();
       setOutputDirectory(handle);
       setOutputDirectoryName("Selected output folder");
+      return handle;
     } catch {
       // The user cancelled the picker.
+      return null;
     }
   }, []);
 
@@ -277,6 +298,80 @@ export default function FWFConverter() {
     await writable.write(blob);
     await writable.close();
   }, [outputDirectory]);
+
+  const saveOutputStream = useCallback(async (
+    stream: ReadableStream<Uint8Array>,
+    name: string,
+    targetOverride?: DirectoryHandle | string | null,
+  ) => {
+    const desktop = window.desktopAPI;
+    const desktopFolder = typeof targetOverride === "string" ? targetOverride : outputDirectoryName;
+    if (desktop && desktopFolder) {
+      const id = await desktop.createOutputFile(desktopFolder, name);
+      const reader = stream.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          await desktop.writeOutputChunk(id, value);
+        }
+        await desktop.closeOutputFile(id);
+      } catch (error) {
+        throw error;
+      } finally {
+        reader.releaseLock();
+      }
+      return;
+    }
+
+    let writable: { write(data: Blob | Uint8Array): Promise<void>; close(): Promise<void> } | null = null;
+    const browserDirectory = targetOverride && typeof targetOverride !== "string"
+      ? targetOverride
+      : outputDirectory;
+    if (browserDirectory) {
+      const fileHandle = await browserDirectory.getFileHandle(name, { create: true });
+      writable = await fileHandle.createWritable();
+    } else if (window.showSaveFilePicker) {
+      const fileHandle = await window.showSaveFilePicker({
+        suggestedName: name,
+        types: [{ description: "CSV file", accept: { "text/csv": [".csv"] } }],
+      });
+      writable = await fileHandle.createWritable();
+    }
+
+    if (writable) {
+      const reader = stream.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          await writable.write(value);
+        }
+        await writable.close();
+      } finally {
+        reader.releaseLock();
+      }
+      return;
+    }
+
+    // Older browsers cannot stream to a download target. Keep this fallback
+    // for small files; large-file mode asks the user to choose an output folder.
+    const chunks: Uint8Array[] = [];
+    const reader = stream.getReader();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    triggerDownload(new Blob(
+      chunks.map(chunk => chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength) as ArrayBuffer),
+      { type: "text/csv;charset=utf-8;" },
+    ), name);
+  }, [outputDirectory, outputDirectoryName]);
 
   // ── Layout handlers ──────────────────────────────────────────────────────
 
@@ -523,32 +618,47 @@ export default function FWFConverter() {
       const df = blankDataFile(file);
       setDataFiles(prev => [...prev, df]);
       try {
-        const text = await file.text();
-        const lines = text.split(/\r?\n/).filter(l => l.length > 0);
-        // If the first line has commas it is a CSV header row — don't count it as a data record
-        const hasCsvHeader = lines.length > 0 && lines[0].includes(",");
-        patchFile(setDataFiles, df.id, { text, lineCount: hasCsvHeader ? lines.length - 1 : lines.length });
+        if (df.streaming) {
+          const scan = await scanFWFFile(file);
+          patchFile(setDataFiles, df.id, {
+            lineCount: scan.lineCount,
+            rawPreviewLines: scan.previewLines,
+          });
+        } else {
+          const text = await file.text();
+          const lines = text.split(/\r?\n/).filter(l => l.length > 0);
+          // If the first line has commas it is a CSV header row — don't count it as a data record
+          const hasCsvHeader = lines.length > 0 && lines[0].includes(",");
+          patchFile(setDataFiles, df.id, {
+            text,
+            rawPreviewLines: hasCsvHeader ? lines.slice(1, 11) : lines.slice(0, 10),
+            lineCount: hasCsvHeader ? lines.length - 1 : lines.length,
+          });
+        }
       } catch (e) { patchFile(setDataFiles, df.id, { error: `Read error: ${(e as Error).message}` }); }
     }
   }, []);
 
-  const assignLayout = useCallback((dfId: string, layoutId: string) => {
-    setDataFiles(prev => prev.map(df => {
-      if (df.id !== dfId) return df;
-      const lo = layouts.find(l => l.id === layoutId);
-      let preview: string[][] = [];
-      if (lo?.result && df.text) {
-        let lines = df.text.split(/\r?\n/).filter(l => l.length > 0);
-        // Skip CSV header row if present (FWF lines are never comma-delimited)
-        if (lines.length > 0 && lines[0].includes(",")) lines = lines.slice(1);
-        preview = lines.slice(0, 10).map(line =>
-          lo.result!.fields.map(f => line.padEnd(f.end).substring(f.start - 1, f.end).trim())
-        );
-      }
-      const encColsList = lo?.result?.fields.map(f => f.varName) ?? [];
-      return { ...df, layoutId, preview, activated: false, step: "ready", encColsList, encResultBlob: null, encResultKey: null, encError: "" };
-    }));
-  }, [layouts]);
+  const assignLayout = useCallback(async (dfId: string, layoutId: string) => {
+    const df = dataFiles.find(d => d.id === dfId);
+    const lo = layouts.find(l => l.id === layoutId);
+    if (!df) return;
+
+    let preview: string[][] = [];
+    if (lo?.result) {
+      const lines = df.text
+        ? df.text.split(/\r?\n/).filter(l => l.length > 0)
+        : df.rawPreviewLines;
+      preview = lines.slice(0, 10).map(line =>
+        lo.result!.fields.map(f => line.padEnd(f.end).substring(f.start - 1, f.end).trim())
+      );
+    }
+    const encColsList = lo?.result?.fields.map(f => f.varName) ?? [];
+    patchFile(setDataFiles, dfId, {
+      layoutId, preview, activated: false, step: "ready", encColsList,
+      encResultBlob: null, encResultKey: null, encOutputSaved: false, encOutputName: "", encError: "",
+    });
+  }, [dataFiles, layouts]);
 
   const removeDataFile = useCallback((id: string) => {
     setDataFiles(prev => prev.filter(df => df.id !== id));
@@ -566,10 +676,32 @@ export default function FWFConverter() {
   // ── Per-file processing ──────────────────────────────────────────────────
 
   const handleEncrypt = useCallback(async (dfId: string) => {
+    const requestedDf = dataFiles.find(d => d.id === dfId);
+    let preparedStreamTarget: DirectoryHandle | string | null =
+      outputDirectory ?? (outputDirectoryName || null);
+
+    if (requestedDf?.streaming && !preparedStreamTarget) {
+      if (window.desktopAPI) {
+        const selectedPath = await window.desktopAPI.chooseOutputFolder();
+        if (selectedPath) {
+          setOutputDirectoryName(selectedPath);
+          preparedStreamTarget = selectedPath;
+        }
+      } else {
+        preparedStreamTarget = await chooseOutputDirectory();
+      }
+      if (!preparedStreamTarget) {
+        patchFile(setDataFiles, dfId, {
+          encError: "Choose an output folder before processing a large file.",
+        });
+        return;
+      }
+    }
+
     setDataFiles(prev => {
       const df = prev.find(d => d.id === dfId);
       const lo = df ? layouts.find(l => l.id === df.layoutId) : null;
-      if (!df || !lo?.result || !df.text || df.encColsList.length === 0) {
+      if (!df || !lo?.result || (!df.text && !df.streaming) || df.encColsList.length === 0) {
         return prev.map(d => d.id === dfId
           ? { ...d, encError: d.encColsList.length === 0 ? "Select at least one column to encrypt." : d.encError }
           : d);
@@ -582,32 +714,81 @@ export default function FWFConverter() {
 
     const df = dataFiles.find(d => d.id === dfId);
     const lo = df ? layouts.find(l => l.id === df.layoutId) : null;
-    if (!df || !lo?.result || !df.text) return;
+    if (!df || !lo?.result || (!df.text && !df.streaming)) return;
     if (df.encColsList.length === 0) return;
 
     try {
-      const { blob, keyHex } = await encryptFWFToBlob(
-        df.text, lo.result.fields, new Set(df.encColsList), buildOpts(),
-        pct => patchFile(setDataFiles, dfId, { encProgress: pct })
-      );
-      patchFile(setDataFiles, dfId, { encResultBlob: blob, encResultKey: keyHex, step: "anon-done", encRunning: false });
+      if (df.streaming) {
+        const streamTarget = preparedStreamTarget;
+        if (!streamTarget) {
+          throw new Error("Choose an output folder before processing a large file.");
+        }
+        const { stream, keyHex } = await encryptFWFFileToStream(
+          df.file, lo.result.fields, new Set(df.encColsList), buildOpts(),
+          pct => patchFile(setDataFiles, dfId, { encProgress: pct })
+        );
+        const outputName = `${df.outputBaseName}_anonymized.csv`;
+        await saveOutputStream(stream, outputName, streamTarget);
+        patchFile(setDataFiles, dfId, {
+          encResultBlob: null, encResultKey: keyHex, encOutputSaved: true,
+          encOutputName: outputName, step: "anon-done", encRunning: false,
+        });
+      } else {
+        const { blob, keyHex } = await encryptFWFToBlob(
+          df.text!, lo.result.fields, new Set(df.encColsList), buildOpts(),
+          pct => patchFile(setDataFiles, dfId, { encProgress: pct })
+        );
+        patchFile(setDataFiles, dfId, {
+          encResultBlob: blob, encResultKey: keyHex, encOutputSaved: false,
+          encOutputName: "", step: "anon-done", encRunning: false,
+        });
+      }
     } catch (e) {
       patchFile(setDataFiles, dfId, { encError: `Encryption failed: ${(e as Error).message}`, encRunning: false });
     }
-  }, [dataFiles, layouts, anonKeyMode, anonSeeds, anonPassphrase, anonPbkdf2Iter, anonDeterministic, anonAlphanumeric, anonKeyHexInput]);
+  }, [dataFiles, layouts, outputDirectory, outputDirectoryName, chooseOutputDirectory, saveOutputStream, anonKeyMode, anonSeeds, anonPassphrase, anonPbkdf2Iter, anonDeterministic, anonAlphanumeric, anonKeyHexInput]);
 
   const handleDownloadOriginal = useCallback(async (dfId: string) => {
     const df = dataFiles.find(d => d.id === dfId);
     const lo = df ? layouts.find(l => l.id === df.layoutId) : null;
-    if (!df || !lo?.result || !df.text) return;
+    if (!df || !lo?.result || (!df.text && !df.streaming)) return;
+    let streamTarget: DirectoryHandle | string | null =
+      outputDirectory ?? (outputDirectoryName || null);
+    if (df.streaming && !streamTarget) {
+      if (window.desktopAPI) {
+        const selectedPath = await window.desktopAPI.chooseOutputFolder();
+        if (selectedPath) {
+          setOutputDirectoryName(selectedPath);
+          streamTarget = selectedPath;
+        }
+      } else {
+        streamTarget = await chooseOutputDirectory();
+      }
+      if (!streamTarget) {
+        patchFile(setDataFiles, dfId, {
+          encError: "Choose an output folder before building a large CSV.",
+        });
+        return;
+      }
+    }
     patchFile(setDataFiles, dfId, { origDownloading: true, origProgress: 0 });
     try {
-      const blob = await convertFWFToCSV(df.text, lo.result.fields, {
-        onProgress: pct => patchFile(setDataFiles, dfId, { origProgress: pct }),
-      });
-      await saveOutput(blob, `${df.outputBaseName}.csv`);
+      if (df.streaming) {
+        const stream = convertFWFFileToStream(df.file, lo.result.fields, {
+          onProgress: pct => patchFile(setDataFiles, dfId, { origProgress: pct }),
+          onBytesProgress: (read, total) => patchFile(setDataFiles, dfId, {
+            origProgress: total > 0 ? Math.min(99, Math.round((read / total) * 100)) : 0,
+          }),
+        });
+        await saveOutputStream(stream, `${df.outputBaseName}.csv`, streamTarget);
+      } else {
+        const blob = await convertFWFToCSV(df.text!, lo.result.fields, {
+          onProgress: pct => patchFile(setDataFiles, dfId, { origProgress: pct }),
+        });
+        await saveOutput(blob, `${df.outputBaseName}.csv`);
+      }
     } finally { patchFile(setDataFiles, dfId, { origDownloading: false, origProgress: 0 }); }
-  }, [dataFiles, layouts, saveOutput]);
+  }, [dataFiles, layouts, outputDirectory, outputDirectoryName, chooseOutputDirectory, saveOutput, saveOutputStream]);
 
   const handleExport = async (dfId: string, fmt: ExportFormat, blob: Blob, fields: FieldDef[], baseName: string) => {
     patchFile(setDataFiles, dfId, { exportingFmts: [...(dataFiles.find(d => d.id === dfId)?.exportingFmts ?? []), fmt] });
@@ -623,7 +804,9 @@ export default function FWFConverter() {
     try {
       const MAX = 500;
       const headers = lo.result.fields.map(f => f.varName);
-      let fwfLines = df.text.split(/\r?\n/).filter(l => l.length > 0);
+      let fwfLines = df.text
+        ? df.text.split(/\r?\n/).filter(l => l.length > 0)
+        : df.rawPreviewLines;
       // Skip CSV header row if present (FWF lines are never comma-delimited)
       if (fwfLines.length > 0 && fwfLines[0].includes(",")) fwfLines = fwfLines.slice(1);
       const original = fwfLines.slice(0, MAX).map(line =>
@@ -900,9 +1083,14 @@ export default function FWFConverter() {
                       </button>
                     </div>
                   ) : (
-                    df.encResultBlob && df.encResultKey && (
+                    df.encResultKey && (
                       <div className="space-y-5">
                         <SuccessBadge text={`Encryption complete — ${df.encColsList.length} column${df.encColsList.length !== 1 ? "s" : ""} encrypted`} />
+                        {df.encOutputSaved && (
+                          <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+                            Large-file mode wrote the anonymized CSV directly to <strong>{df.encOutputName}</strong>. The source file was processed in chunks without loading it into memory.
+                          </div>
+                        )}
 
                         <div className="border-l-4 border-amber-400 bg-amber-50 rounded-r-xl p-5 space-y-3">
                           <p className="text-sm font-semibold text-amber-800 flex items-center gap-2"><Key className="w-4 h-4" />Symmetric Key — save to decrypt later</p>
@@ -921,9 +1109,9 @@ export default function FWFConverter() {
                           <p className="text-sm text-amber-700">⚠ Same key decrypts. Store securely — never log or share.</p>
                         </div>
 
-                        {/* Format download panel */}
-                        <div className="border border-gray-200 rounded-xl overflow-hidden">
-                          {EXPORT_FORMATS.map((fmt, idx) => {
+                         {/* Format download panel — available when the result is retained in memory. */}
+                         {df.encResultBlob && <div className="border border-gray-200 rounded-xl overflow-hidden">
+                           {EXPORT_FORMATS.map((fmt, idx) => {
                             const isRunning = df.exportingFmts.includes(fmt.id);
                             return (
                               <div key={fmt.id} className={`flex items-center gap-3 px-4 py-3 bg-white ${idx !== EXPORT_FORMATS.length - 1 ? "border-b border-gray-100" : ""}`}>
@@ -940,13 +1128,13 @@ export default function FWFConverter() {
                               </div>
                             );
                           })}
-                        </div>
+                         </div>}
 
                         <div className="flex flex-col sm:flex-row gap-3">
-                          <button onClick={() => handleOpenCompare(df.id)}
+                           {df.encResultBlob && <button onClick={() => handleOpenCompare(df.id)}
                             className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 border-emerald-500 text-emerald-700 text-sm font-semibold hover:bg-emerald-50 transition-colors">
                             <Columns2 className="w-4 h-4" />View side by side
-                          </button>
+                           </button>}
                           <button onClick={() => handleDownloadOriginal(df.id)} disabled={df.origDownloading}
                             className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl border border-gray-200 text-sm text-gray-500 hover:text-black hover:border-gray-400 disabled:opacity-50 transition-colors">
                             <Download className="w-4 h-4" />Download original CSV
@@ -954,7 +1142,10 @@ export default function FWFConverter() {
                         </div>
                         {df.origDownloading && <ProgressBar pct={df.origProgress} label="Building original CSV…" icon={<Download className="w-4 h-4 animate-pulse" />} />}
 
-                        <button onClick={() => patchFile(setDataFiles, df.id, { step: "ready", encResultBlob: null, encResultKey: null, encProgress: 0 })}
+                         <button onClick={() => patchFile(setDataFiles, df.id, {
+                           step: "ready", encResultBlob: null, encResultKey: null,
+                           encOutputSaved: false, encOutputName: "", encProgress: 0,
+                         })}
                           className="w-full text-sm text-gray-400 hover:text-black text-center transition-colors">
                           ← Change column selection or key settings
                         </button>

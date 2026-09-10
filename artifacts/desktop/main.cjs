@@ -1,7 +1,9 @@
 const { app, BrowserWindow, dialog, ipcMain } = require("electron");
 const path = require("node:path");
+const fs = require("node:fs");
 
 let mainWindow;
+const outputStreams = new Map();
 
 function logRendererDiagnostics() {
   mainWindow.webContents.on("console-message", (_event, level, message, line, sourceId) => {
@@ -52,6 +54,36 @@ ipcMain.handle("choose-output-folder", async () => {
     properties: ["openDirectory", "createDirectory"]
   });
   return result.canceled ? null : result.filePaths[0];
+});
+
+ipcMain.handle("create-output-file", async (_event, folder, name) => {
+  const safeName = path.basename(String(name));
+  const filePath = path.join(String(folder), safeName);
+  const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  outputStreams.set(id, fs.createWriteStream(filePath));
+  return id;
+});
+
+ipcMain.handle("write-output-chunk", async (_event, id, chunk) => {
+  const stream = outputStreams.get(id);
+  if (!stream) throw new Error("Output stream is not available.");
+  const buffer = Buffer.from(chunk);
+  if (stream.write(buffer)) return;
+  await new Promise((resolve, reject) => {
+    stream.once("drain", resolve);
+    stream.once("error", reject);
+  });
+});
+
+ipcMain.handle("close-output-file", async (_event, id) => {
+  const stream = outputStreams.get(id);
+  if (!stream) return;
+  await new Promise((resolve, reject) => {
+    stream.once("finish", resolve);
+    stream.once("error", reject);
+    stream.end();
+  });
+  outputStreams.delete(id);
 });
 
 app.whenReady().then(() => {
