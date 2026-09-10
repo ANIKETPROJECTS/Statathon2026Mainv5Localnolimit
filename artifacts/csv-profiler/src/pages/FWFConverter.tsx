@@ -221,6 +221,10 @@ export default function FWFConverter() {
   const [dataFiles, setDataFiles] = useState<DataFile[]>([]);
   const [outputDirectory, setOutputDirectory] = useState<DirectoryHandle | null>(null);
   const [outputDirectoryName, setOutputDirectoryName] = useState("");
+  const [commonSelectedColumns, setCommonSelectedColumns] = useState<string[] | null>(null);
+  const [collapsedAnonFiles, setCollapsedAnonFiles] = useState<Set<string>>(new Set());
+  const [batchEncryptRunning, setBatchEncryptRunning] = useState(false);
+  const [batchEncryptIndex, setBatchEncryptIndex] = useState(0);
 
   // Global key settings (shared across all file encryptions)
   const [anonMode, setAnonMode] = useState<AnonMode>("encrypt");
@@ -681,12 +685,40 @@ export default function FWFConverter() {
     }));
   }, [layouts]);
 
+  const handleCommonColumnsChange = useCallback((next: Set<string>) => {
+    setCommonSelectedColumns([...next]);
+    setDataFiles(prev => {
+      const active = prev.filter(df => df.activated);
+      if (active.length < 2) return prev;
+
+      const commonColumns = active.slice(1).reduce<string[]>((common, df) => {
+        const lo = layouts.find(l => l.id === df.layoutId);
+        const fields = new Set(lo?.result?.fields.map(f => f.varName) ?? []);
+        return common.filter(column => fields.has(column));
+      }, layouts.find(l => l.id === active[0].layoutId)?.result?.fields.map(f => f.varName) ?? []);
+      const selectedCommon = new Set([...next].filter(column => commonColumns.includes(column)));
+
+      return prev.map(df => {
+        if (!df.activated) return df;
+        const columns = new Set(df.encColsList);
+        for (const column of commonColumns) {
+          if (selectedCommon.has(column)) columns.add(column);
+          else columns.delete(column);
+        }
+        return { ...df, encColsList: [...columns] };
+      });
+    });
+  }, [layouts]);
+
   // ── Per-file processing ──────────────────────────────────────────────────
 
-  const handleEncrypt = useCallback(async (dfId: string) => {
+  const handleEncrypt = useCallback(async (
+    dfId: string,
+    streamTargetOverride?: DirectoryHandle | string | null,
+  ) => {
     const requestedDf = dataFiles.find(d => d.id === dfId);
     let preparedStreamTarget: DirectoryHandle | string | null =
-      outputDirectory ?? (outputDirectoryName || null);
+      streamTargetOverride ?? outputDirectory ?? (outputDirectoryName || null);
 
     if (requestedDf?.streaming && !preparedStreamTarget) {
       if (window.desktopAPI) {
@@ -757,7 +789,52 @@ export default function FWFConverter() {
     } catch (e) {
       patchFile(setDataFiles, dfId, { encError: `Encryption failed: ${(e as Error).message}`, encRunning: false });
     }
-  }, [dataFiles, layouts, outputDirectory, outputDirectoryName, chooseOutputDirectory, saveOutputStream, anonKeyMode, anonSeeds, anonPassphrase, anonPbkdf2Iter, anonDeterministic, anonAlphanumeric, anonKeyHexInput]);
+  }, [dataFiles, layouts, outputDirectory, outputDirectoryName, chooseOutputDirectory, saveOutputStream, anonKeyMode, anonSeeds, anonPassphrase, anonPbkdf2Iter, anonDeterministic, anonAlphanumeric, anonKeyHexInput, anonStrongDiffusion]);
+
+  const handleEncryptAll = useCallback(async () => {
+    const filesToEncrypt = dataFiles.filter(df => df.activated);
+    if (filesToEncrypt.length < 2 || batchEncryptRunning) return;
+
+    const missingColumns = filesToEncrypt.filter(df => df.encColsList.length === 0);
+    if (missingColumns.length > 0) {
+      setDataFiles(prev => prev.map(df => missingColumns.some(missing => missing.id === df.id)
+        ? { ...df, encError: "Select at least one column to encrypt before using Anonymize all files." }
+        : df));
+      return;
+    }
+
+    let streamTarget: DirectoryHandle | string | null =
+      outputDirectory ?? (outputDirectoryName || null);
+    if (filesToEncrypt.some(df => df.streaming) && !streamTarget) {
+      if (window.desktopAPI) {
+        const selectedPath = await window.desktopAPI.chooseOutputFolder();
+        if (selectedPath) {
+          setOutputDirectoryName(selectedPath);
+          streamTarget = selectedPath;
+        }
+      } else {
+        streamTarget = await chooseOutputDirectory();
+      }
+      if (!streamTarget) {
+        setDataFiles(prev => prev.map(df => df.streaming && df.activated
+          ? { ...df, encError: "Choose an output folder before processing large files." }
+          : df));
+        return;
+      }
+    }
+
+    setBatchEncryptRunning(true);
+    setBatchEncryptIndex(0);
+    try {
+      for (let index = 0; index < filesToEncrypt.length; index++) {
+        setBatchEncryptIndex(index + 1);
+        await handleEncrypt(filesToEncrypt[index].id, streamTarget);
+      }
+    } finally {
+      setBatchEncryptRunning(false);
+      setBatchEncryptIndex(0);
+    }
+  }, [dataFiles, batchEncryptRunning, outputDirectory, outputDirectoryName, chooseOutputDirectory, handleEncrypt]);
 
   const handleDownloadOriginal = useCallback(async (dfId: string) => {
     const df = dataFiles.find(d => d.id === dfId);
@@ -904,6 +981,19 @@ export default function FWFConverter() {
   const assignedFiles = dataFiles.filter(df => df.layoutId !== "");
   const activatedFiles = dataFiles.filter(df => df.activated);
   const keyModeLabel = anonKeyMode === "random" ? `seeds = [${anonSeeds.join(", ")}]` : anonKeyMode === "pbkdf2" ? `PBKDF2 (${anonPbkdf2Iter.toLocaleString()} iter)` : "raw hex key";
+  const commonColumnNames = activatedFiles.length > 1
+    ? activatedFiles.slice(1).reduce<string[]>((common, df) => {
+      const lo = layouts.find(l => l.id === df.layoutId);
+      const fields = new Set(lo?.result?.fields.map(f => f.varName) ?? []);
+      return common.filter(column => fields.has(column));
+    }, layouts.find(l => l.id === activatedFiles[0].layoutId)?.result?.fields.map(f => f.varName) ?? [])
+    : [];
+  const selectedCommonColumns = new Set(
+    (commonSelectedColumns ?? commonColumnNames.filter(column =>
+      activatedFiles.every(df => df.encColsList.includes(column))
+    )).filter(column => commonColumnNames.includes(column)),
+  );
+  const filesMissingColumns = activatedFiles.filter(df => df.encColsList.length === 0);
 
   const phase = readyLayouts.length === 0 ? 0 : assignedFiles.length === 0 ? 1 : 2;
 
@@ -1091,6 +1181,50 @@ export default function FWFConverter() {
               alphanumeric={anonAlphanumeric} setAlphanumeric={setAnonAlphanumeric}
               keyHexInput={anonKeyHexInput} setKeyHexInput={setAnonKeyHexInput}
             />
+            {anonMode === "encrypt" && activatedFiles.length > 1 && commonColumnNames.length > 0 && (
+              <div className="mt-6 border border-blue-200 bg-blue-50/40 rounded-xl p-5 space-y-3">
+                <div>
+                  <p className="text-sm font-semibold text-blue-950">Common columns across all files</p>
+                  <p className="text-xs text-blue-700 mt-1">
+                    Select a column once to add it to every active file. Columns shown here exist in all {activatedFiles.length} active files.
+                  </p>
+                </div>
+                <ColSelector
+                  allCols={commonColumnNames}
+                  selected={selectedCommonColumns}
+                  onChange={handleCommonColumnsChange}
+                  label="Apply common columns to all files"
+                />
+              </div>
+            )}
+            {anonMode === "encrypt" && activatedFiles.length > 1 && (
+              <div className="mt-6 border border-emerald-200 bg-emerald-50 rounded-xl p-5 space-y-3">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold text-emerald-950">Batch anonymisation</p>
+                    <p className="text-xs text-emerald-700 mt-1">
+                      Process all {activatedFiles.length} active files using their current column selections.
+                      {filesMissingColumns.length > 0 && " Select at least one column in each file first."}
+                    </p>
+                  </div>
+                  <button
+                    onClick={handleEncryptAll}
+                    disabled={batchEncryptRunning || filesMissingColumns.length > 0 || activatedFiles.some(df => df.encRunning)}
+                    className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-700 disabled:opacity-50 transition-colors whitespace-nowrap"
+                  >
+                    {batchEncryptRunning
+                      ? <><Spin />Anonymizing {batchEncryptIndex} of {activatedFiles.length}…</>
+                      : <><Layers className="w-4 h-4" />Anonymize all files</>}
+                  </button>
+                </div>
+                {batchEncryptRunning && (
+                  <ProgressBar
+                    pct={Math.round((batchEncryptIndex / activatedFiles.length) * 100)}
+                    label={`Completed ${Math.max(0, batchEncryptIndex - 1)} of ${activatedFiles.length} files`}
+                  />
+                )}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -1102,6 +1236,7 @@ export default function FWFConverter() {
         const fields = lo.result.fields;
         const allColNames = fields.map(f => f.varName);
         const encCols = new Set(df.encColsList);
+        const isCollapsed = collapsedAnonFiles.has(df.id);
 
         return (
           <div key={df.id} className="border border-gray-200 rounded-2xl overflow-hidden">
@@ -1113,11 +1248,24 @@ export default function FWFConverter() {
                 <p className="text-xs text-gray-500 mt-0.5">{df.lineCount.toLocaleString()} records · {fields.length} columns · layout: {lo.result.sheetName || lo.fileName}</p>
               </div>
               {df.step === "anon-done" && <span className="flex items-center gap-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-lg flex-shrink-0"><CheckCircle2 className="w-3.5 h-3.5" />Done</span>}
+              <button
+                onClick={() => setCollapsedAnonFiles(prev => {
+                  const next = new Set(prev);
+                  if (next.has(df.id)) next.delete(df.id);
+                  else next.add(df.id);
+                  return next;
+                })}
+                className="p-1.5 rounded-lg text-gray-400 hover:text-black hover:bg-white transition-colors flex-shrink-0"
+                aria-label={isCollapsed ? `Expand ${df.fileName}` : `Minimize ${df.fileName}`}
+                title={isCollapsed ? "Expand file section" : "Minimize file section"}
+              >
+                {isCollapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+              </button>
               <button onClick={() => patchFile(setDataFiles, df.id, { activated: false })}
                 className="text-gray-400 hover:text-black flex-shrink-0"><X className="w-4 h-4" /></button>
             </div>
 
-            <div className="p-6 space-y-5">
+            {!isCollapsed && <div className="p-6 space-y-5">
 
               {anonMode === "encrypt" && (
                 <>
@@ -1213,7 +1361,7 @@ export default function FWFConverter() {
                 </>
               )}
 
-            </div>
+            </div>}
           </div>
         );
       })}
