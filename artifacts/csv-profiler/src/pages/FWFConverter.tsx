@@ -1552,11 +1552,11 @@ function KeySettings({ keyMode, setKeyMode, seeds, setSeeds, passphrase, setPass
             <input type="checkbox" checked={alphanumeric} onChange={e => setAlphanumeric(e.target.checked)} className="accent-violet-600 w-4 h-4 mt-0.5 flex-shrink-0" />
             <div>
               <p className="font-semibold">Alphanumeric output</p>
-              <p className="text-xs mt-1 opacity-70">{alphanumeric ? "Output uses 0–9 + a–z, same length as original." : "Output preserves original character class (digits stay digits, letters stay letters)."}</p>
+              <p className="text-xs mt-1 opacity-70">{alphanumeric ? "Output uses 0–9 + a–z + A–Z, same length as original." : "Output preserves original character class (digits stay digits, letters stay letters)."}</p>
             </div>
           </label>
           <div className="space-y-1 text-sm text-gray-500">
-            {[["Cipher", "Custom FPE simulation"], ["Keys", "4 × 256-bit"], ["Rounds", "4-pass chain"], ["Stream", "xorshift128+"], ["Mode", deterministic ? "Deterministic" : "Per-cell"], ["Output", alphanumeric ? "Alphanumeric (0–9 a–z)" : "Preserves char class"]].map(([k, v]) => (
+            {[["Cipher", "Custom FPE simulation"], ["Keys", "4 × 256-bit"], ["Rounds", "4-pass chain"], ["Stream", "xorshift128+"], ["Mode", deterministic ? "Deterministic" : "Per-cell"], ["Output", alphanumeric ? "Alphanumeric (0–9 a–z A–Z)" : "Preserves char class"]].map(([k, v]) => (
               <div key={k} className="flex gap-3"><span className="font-semibold text-black w-12 shrink-0">{k}</span><span>{v}</span></div>
             ))}
           </div>

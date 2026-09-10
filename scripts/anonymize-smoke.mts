@@ -40,6 +40,7 @@ const base: AnonymizeOptions = {
   passphrase: "",
   pbkdf2Iterations: 100_000,
   deterministic: true,
+  exportSalt: "0123456789abcdef0123456789abcdef",
 };
 
 const deterministic1 = await roundTrip(base, "all");
@@ -54,6 +55,25 @@ assert(selectiveLines.slice(1).every((line, index) => {
   const cells = line.split(",");
   return cells[0] !== records[index][0] && cells[1] === records[index][1] && cells[2] === records[index][2];
 }), "selective non-deterministic decrypt did not restore the selected column");
+
+const metadataOptions: AnonymizeOptions = {
+  ...base,
+  deterministic: false,
+  alphanumericOutput: true,
+};
+const metadataEncrypted = await encryptFWFToBlob(
+  raw, fields, new Set(["A", "B", "C"]), metadataOptions, () => {}
+);
+const metadataDecrypted = await decryptCSVToBlob(
+  await metadataEncrypted.blob.text(),
+  new Set(["A", "B", "C"]),
+  { ...metadataOptions, deterministic: true, alphanumericOutput: false },
+  () => {}
+);
+assert(
+  await metadataDecrypted.text() === expected,
+  "metadata-driven deterministic/alphanumeric round trip failed"
+);
 
 const hexKey = "0123456789abcdef".repeat(4);
 const hexOptions: AnonymizeOptions = { ...base, keyMode: "hex", keyHex: hexKey };
@@ -131,8 +151,8 @@ async function encryptSingleValue(value: string, options: AnonymizeOptions): Pro
   ];
   const result = await encryptFWFToBlob(anchor + "\n" + dataLine, fields, new Set(["V"]), options, () => {});
   const csvText = await result.blob.text();
-  // "P,V\n[row1]\n[row2]\n"  — we want row2's V column
-  const lines = csvText.trimEnd().split("\n");
+  // Skip v2/v3 metadata comments and read the second data row.
+  const lines = csvText.trimEnd().split("\n").filter(line => line.trim() && !line.startsWith("#"));
   return (parseCsvLine(lines[2] ?? "")[1]) ?? "";
 }
 
@@ -141,7 +161,17 @@ async function decryptSingleValue(encrypted: string, options: AnonymizeOptions):
   // Use the same two-row layout (anchor + test row) so the row index is consistent.
   const width = 1 + encrypted.length;
   const anchorEnc = ANCHOR_CHAR.repeat(width); // anchor row V col is "AAA..." — decrypts to itself
-  const csvText = `P,V\n${PREFIX_CHAR},${csvQuote(anchorEnc)}\n${PREFIX_CHAR},${csvQuote(encrypted)}\n`;
+  const csvText = [
+    "# AIRAVATA-FORMAT: v3",
+    `# AIRAVATA-EXPORT-SALT: ${options.exportSalt ?? "0123456789abcdef0123456789abcdef"}`,
+    `# AIRAVATA-DETERMINISTIC: ${options.deterministic ? "true" : "false"}`,
+    `# AIRAVATA-ALPHANUMERIC: ${options.alphanumericOutput ? "true" : "false"}`,
+    "",
+    `P,V`,
+    `${PREFIX_CHAR},${csvQuote(anchorEnc)}`,
+    `${PREFIX_CHAR},${csvQuote(encrypted)}`,
+    "",
+  ].join("\n");
   const result = await decryptCSVToBlob(csvText, new Set(["V"]), options, () => {});
   const text = await result.text();
   const lines = text.trimEnd().split("\n");
@@ -150,6 +180,7 @@ async function decryptSingleValue(encrypted: string, options: AnonymizeOptions):
 
 const testValues = [
   "12345",
+  "65556",
   "10000",
   "99999",
   "50001",

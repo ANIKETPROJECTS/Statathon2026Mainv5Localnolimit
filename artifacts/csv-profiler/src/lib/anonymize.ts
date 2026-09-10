@@ -12,11 +12,13 @@
 // v1 (legacy): original algorithm — column-level keystream, no CBC, no export salt, no HMAC.
 //              Files written before this hardening pass. Decryption is fully supported via
 //              the legacy code path.
-// v2 (current): all security fixes applied — per-value keystream, CBC diffusion, CSPRNG-derived
-//               export salt, HMAC-SHA256 integrity, and Web Crypto PBKDF2. New files always
-//               use v2. Old v1 files decrypt correctly with the legacy path.
+// v2 (legacy): all security fixes applied — per-value keystream, CBC diffusion, CSPRNG-derived
+//              export salt, HMAC-SHA256 integrity, and Web Crypto PBKDF2. Its deterministic
+//              per-value nonce could not be reproduced during decryption.
+// v3 (current): uses a reproducible column nonce in deterministic mode, while retaining
+//               the v2 metadata, salt, CBC, HMAC, and PBKDF2 protections.
 
-export const FORMAT_VERSION = "v2";
+export const FORMAT_VERSION = "v3";
 
 // ── §9 — xorshift128+ PRNG ────────────────────────────────────────────────────
 function makeKeystream(seed: number) {
@@ -131,22 +133,6 @@ function hashColIV(keyHex: string, colName: string): number {
   return h;
 }
 
-// ── §11-v2 — Per-value nonce (Issue 2: reused keystream) ─────────────────────
-// Derives a unique IV for each distinct cell value so that identical plaintexts
-// in the same column produce different keystreams. Determinism is preserved: the
-// same value always produces the same nonce (and thus the same ciphertext within
-// a single export run), so the deterministic-mode cache still works correctly.
-function hashValueNonce(baseIv: number, value: string): number {
-  let h = baseIv;
-  for (let i = 0; i < value.length; i++) {
-    h = (Math.imul(h, 0x9e3779b9) + value.charCodeAt(i)) >>> 0;
-    h = (h ^ (h >>> 16)) >>> 0;
-  }
-  // Mix in value length to prevent "AB" colliding with "A" + degenerate suffix
-  h = (Math.imul(h, 0x85ebca6b) ^ ((value.length * 0x9e3779b9) >>> 0)) >>> 0;
-  return h;
-}
-
 // ── §12-v1 — Per-cell keystream bytes (v1) ───────────────────────────────────
 function makeCellKsBytes(size: number, keyHex: string, ivSeed: number): Uint8Array {
   const combined = (parseInt(keyHex.slice(0, 8), 16) ^ ivSeed) >>> 0;
@@ -208,8 +194,8 @@ function modInverse(a: number, m: number): number {
 // Ordered alphabet of all printable non-alphanumeric ASCII characters (S=33).
 const SYMBOL_CHARS = ' !"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~';
 
-// Alphanumeric output alphabet: digits 0–9 then lowercase a–z (S=36).
-const ALNUM_CHARS = "0123456789abcdefghijklmnopqrstuvwxyz"; // S=36
+// Reversible alphanumeric output alphabet: digits, lowercase, then uppercase.
+const ALNUM_CHARS = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"; // S=62
 
 const COPRIME_MULS: Record<number, number[]> = {
   9:  [2, 4, 5, 7, 8],
@@ -573,10 +559,34 @@ function encryptAlphanumCell(ksBytes: Uint8Array, value: string): string {
     let idx: number | null = null;
     if (code >= 48 && code <= 57)  idx = code - 48;
     else if (code >= 97 && code <= 122) idx = code - 87;
-    else if (code >= 65 && code <= 90)  idx = code - 55;
+    else if (code >= 65 && code <= 90)  idx = code - 29;
     if (idx !== null) {
       let v = idx;
       for (let i = 0; i < 5; i++) v = applyOpFwd(v, ksBytes[ki++ % ksBytes.length], S, muls);
+      return ALNUM_CHARS[v];
+    }
+    ki += 5;
+    return ch;
+  }).join("");
+}
+
+function decryptAlphanumCell(ksBytes: Uint8Array, value: string): string {
+  const S = ALNUM_CHARS.length;
+  const muls = getMuls(S);
+  const chars = [...value];
+  let ki = 0;
+  return chars.map(ch => {
+    const code = ch.charCodeAt(0);
+    let idx: number | null = null;
+    if (code >= 48 && code <= 57) idx = code - 48;
+    else if (code >= 97 && code <= 122) idx = code - 87;
+    else if (code >= 65 && code <= 90) idx = code - 29;
+    if (idx !== null) {
+      let v = idx;
+      for (let i = 4; i >= 0; i--) {
+        v = applyOpInv(v, ksBytes[(ki + i) % ksBytes.length], S, muls);
+      }
+      ki += 5;
       return ALNUM_CHARS[v];
     }
     ki += 5;
@@ -643,6 +653,8 @@ async function computeKeyFingerprint(keyChain: string[]): Promise<string> {
 interface V2FormatMeta {
   formatVersion: string | null;   // "v2" or null for v1
   exportSalt: string | null;      // 32 hex chars
+  deterministic: boolean | null;
+  alphanumericOutput: boolean | null;
   hmacHex: string | null;         // 64 hex chars
   commentLineCount: number;       // lines to skip before CSV header
   hmacLineIndex: number;          // index of the HMAC line (−1 if absent)
@@ -651,6 +663,8 @@ interface V2FormatMeta {
 function parseFormatMeta(lines: string[]): V2FormatMeta {
   let formatVersion: string | null = null;
   let exportSalt: string | null = null;
+  let deterministic: boolean | null = null;
+  let alphanumericOutput: boolean | null = null;
   let commentLineCount = 0;
 
   for (let i = 0; i < lines.length; i++) {
@@ -662,6 +676,13 @@ function parseFormatMeta(lines: string[]): V2FormatMeta {
       formatVersion = trimmed.replace("# AIRAVATA-FORMAT:", "").trim();
     else if (trimmed.startsWith("# AIRAVATA-EXPORT-SALT:"))
       exportSalt = trimmed.replace("# AIRAVATA-EXPORT-SALT:", "").trim();
+    else if (trimmed.startsWith("# AIRAVATA-DETERMINISTIC:")) {
+      const value = trimmed.replace("# AIRAVATA-DETERMINISTIC:", "").trim().toLowerCase();
+      deterministic = value === "true" ? true : value === "false" ? false : null;
+    } else if (trimmed.startsWith("# AIRAVATA-ALPHANUMERIC:")) {
+      const value = trimmed.replace("# AIRAVATA-ALPHANUMERIC:", "").trim().toLowerCase();
+      alphanumericOutput = value === "true" ? true : value === "false" ? false : null;
+    }
   }
 
   // Find HMAC line scanning from the end
@@ -677,7 +698,15 @@ function parseFormatMeta(lines: string[]): V2FormatMeta {
     break;
   }
 
-  return { formatVersion, exportSalt, hmacHex, commentLineCount, hmacLineIndex };
+  return {
+    formatVersion,
+    exportSalt,
+    deterministic,
+    alphanumericOutput,
+    hmacHex,
+    commentLineCount,
+    hmacLineIndex,
+  };
 }
 
 // ── CSV helpers ───────────────────────────────────────────────────────────────
@@ -720,12 +749,12 @@ export interface AnonymizeOptions {
   deterministic: boolean;
   keyHex?: string;
   /**
-   * When true, a 5th FPE pass remaps every encrypted character into the 36-char
-   * alphanumeric alphabet (0–9 + a–z), preserving the original field length exactly.
+   * When true, a 5th FPE pass remaps every encrypted character into the 62-char
+   * alphanumeric alphabet (0–9 + a–z + A–Z), preserving the original field length exactly.
    */
   alphanumericOutput?: boolean;
   /**
-   * (v2) 128-bit export salt as 32 hex characters, generated once per export via
+   * (v3) 128-bit export salt as 32 hex characters, generated once per export via
    * crypto.getRandomValues() and embedded in the CSV header.  Pass this back to
    * decryptCSVToBlob (or let decryptCSVToBlob parse it from the file automatically).
    * If omitted during encryption a fresh CSPRNG salt is generated automatically.
@@ -733,11 +762,11 @@ export interface AnonymizeOptions {
   exportSalt?: string;
 }
 
-/** (v2) Non-sensitive record of what was done for this anonymization run. */
+/** (v3) Non-sensitive record of what was done for this anonymization run. */
 export interface AnonymizeAuditLog {
   /** ISO-8601 timestamp of when the export was produced */
   timestamp: string;
-  /** "v2" for new files */
+  /** "v3" for new files */
   formatVersion: string;
   /** "random" | "pbkdf2" | "hex" */
   keyMode: string;
@@ -750,9 +779,9 @@ export interface AnonymizeAuditLog {
   exportSalt: string;
   /** Names of columns that were encrypted in this run */
   columnsProcessed: string[];
-  /** true — CBC diffusion was applied (always true for v2) */
+  /** true — CBC diffusion was applied (always true for v3) */
   cbcEnabled: boolean;
-  /** true — HMAC-SHA256 integrity tag is embedded in the CSV (always true for v2) */
+  /** true — HMAC-SHA256 integrity tag is embedded in the CSV (always true for v3) */
   hmacPresent: boolean;
 }
 
@@ -925,6 +954,8 @@ export async function encryptFWFToBlob(
   const metaBlock = [
     `# AIRAVATA-FORMAT: ${FORMAT_VERSION}`,
     `# AIRAVATA-EXPORT-SALT: ${exportSalt}`,
+    `# AIRAVATA-DETERMINISTIC: ${options.deterministic ? "true" : "false"}`,
+    `# AIRAVATA-ALPHANUMERIC: ${options.alphanumericOutput ? "true" : "false"}`,
     `# AIRAVATA-CBC: enabled`,
     "",
   ].join("\n");
@@ -958,7 +989,7 @@ export async function encryptFWFToBlob(
               const ksArr = keyChain.map(kh =>
                 makeCellKsBytesV2(
                   ksSize(val.length), kh,
-                  hashValueNonce(hashColIV(kh, f.varName), val),
+                  hashColIV(kh, f.varName),
                   exportSalt
                 )
               );
@@ -1037,13 +1068,33 @@ export async function decryptCSVToBlob(
 ): Promise<Blob> {
   const allLines = csvText.split(/\r?\n/);
   const meta = parseFormatMeta(allLines);
-  const isV2 = meta.formatVersion === "v2";
+  const isV2 = meta.formatVersion === "v2" || meta.formatVersion === "v3";
 
   // ── v2 path ───────────────────────────────────────────────────────────────
   if (isV2) {
     const exportSalt = meta.exportSalt ?? options.exportSalt ?? "";
     const optionsV2: AnonymizeOptions = { ...options, exportSalt };
+    // v2 files record the algorithm switches used during encryption. This
+    // keeps decryption correct even if the UI settings changed afterwards.
+    const deterministic = meta.deterministic ?? options.deterministic;
+    const alphanumericOutput = meta.alphanumericOutput ?? options.alphanumericOutput ?? false;
     const keyChain = await resolveKeyChainAsync(optionsV2);
+
+    if (meta.formatVersion === "v2" && deterministic) {
+      throw new Error(
+        "This file uses the old v2 deterministic format, which cannot be reversed reliably. Re-export it with the current AIRAVATA DEA version."
+      );
+    }
+
+    const alnumKey = alphanumericOutput ? deriveAlnumKeyV2(keyChain, exportSalt) : "";
+    const colAlnumKs: Record<string, Uint8Array> = {};
+    if (alphanumericOutput) {
+      for (const col of decCols) {
+        colAlnumKs[col] = makeCellKsBytesV2(
+          DET_KS_SIZE, alnumKey, hashColIV(alnumKey, col), exportSalt
+        );
+      }
+    }
 
     // ── Issue 7: verify HMAC before decrypting ────────────────────────────
     if (meta.hmacHex && meta.hmacLineIndex >= 0) {
@@ -1094,15 +1145,16 @@ export async function decryptCSVToBlob(
           let val = cells[ci] ?? "";
 
           if (decCols.has(col) && val.length > 0) {
-            if (options.deterministic) {
+            if (deterministic) {
               const ck = col + "\x00" + val;
               if (detCache.has(ck)) {
                 val = detCache.get(ck)!;
               } else {
+                if (alphanumericOutput) val = decryptAlphanumCell(colAlnumKs[col], val);
                 const ksArr = keyChain.map(kh =>
                   makeCellKsBytesV2(
                     ksSize(val.length), kh,
-                    hashValueNonce(hashColIV(kh, col), val),
+                    hashColIV(kh, col),
                     exportSalt
                   )
                 );
@@ -1121,6 +1173,7 @@ export async function decryptCSVToBlob(
                   exportSalt
                 )
               );
+              if (alphanumericOutput) val = decryptAlphanumCell(colAlnumKs[col], val);
               val = decryptChain4V2(ksArr, val);
             }
           }
