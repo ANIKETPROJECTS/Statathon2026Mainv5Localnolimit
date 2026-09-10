@@ -84,6 +84,8 @@ interface DataFile {
 }
 
 type DirectoryHandle = {
+  queryPermission?: (options?: { mode?: "read" | "readwrite" }) => Promise<"granted" | "denied" | "prompt">;
+  requestPermission?: (options?: { mode?: "read" | "readwrite" }) => Promise<"granted" | "denied" | "prompt">;
   getFileHandle(name: string, options?: { create?: boolean }): Promise<{
     createWritable(): Promise<{ write(data: Blob | Uint8Array): Promise<void>; close(): Promise<void> }>;
   }>;
@@ -291,6 +293,11 @@ export default function FWFConverter() {
     }
     try {
       const handle = await picker();
+      const permission = await handle.requestPermission?.({ mode: "readwrite" });
+      if (permission === "denied") {
+        alert("Write permission is required to save anonymized files in the selected folder.");
+        return null;
+      }
       setOutputDirectory(handle);
       setOutputDirectoryName("Selected output folder");
       return handle;
