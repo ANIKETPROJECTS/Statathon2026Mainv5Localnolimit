@@ -2961,7 +2961,7 @@ export function GuideSection() {
             <BigCard color="bg-white border-violet-200">
               <h3 className="text-lg font-bold text-slate-800 mb-2">↔️ Encryption vs. Decryption — The Exact Formulas</h3>
               <p className="text-slate-500 text-sm leading-relaxed mb-5">
-                Both paths consume the <strong>same five keystream bytes</strong> for each character. Encryption applies five forward micro-operations; decryption applies their mathematical inverses in reverse order. The operation type comes from <span className="font-mono bg-slate-100 px-1 rounded">k % 4</span>, and all arithmetic stays inside the character class alphabet.
+                Both paths consume the <strong>same five keystream bytes</strong> for each character. Encryption applies five forward micro-operations and then two keyed whole-value diffusion sweeps; decryption reverses the sweeps first, then applies the mathematical inverses in reverse order. The operation type comes from <span className="font-mono bg-slate-100 px-1 rounded">k % 4</span>, and all arithmetic stays inside the character class alphabet.
               </p>
               <div className="overflow-x-auto rounded-xl border border-slate-200">
                 <table className="w-full text-xs border-collapse">
@@ -2992,7 +2992,28 @@ export function GuideSection() {
                 </table>
               </div>
               <div className="mt-4 bg-amber-50 border border-amber-200 rounded-xl p-4 text-xs text-amber-800">
-                <strong>Proof it works:</strong> each micro-operation is bijective on its alphabet. Decryption reads the same five bytes in reverse order and applies each inverse, so the complete five-operation round returns every digit or letter to its original position.
+                <strong>Proof it works:</strong> each micro-operation is bijective on its alphabet, and each diffusion sweep is triangular: every position is changed using a neighbour that is already known during reversal. Decryption undoes the sweeps in reverse order, then applies each micro-operation inverse, so the complete round returns every value exactly.
+              </div>
+            </BigCard>
+
+            <BigCard color="bg-white border-emerald-200">
+              <h3 className="text-lg font-bold text-slate-800 mb-3">🌊 Why Nearby Values No Longer Look Nearby</h3>
+              <p className="text-slate-500 text-sm leading-relaxed mb-4">
+                A character-only substitution could make <span className="font-mono font-bold">65556</span> and <span className="font-mono font-bold">65553</span> differ in only one output position. The current compact format applies a keyed left-to-right sweep and then a keyed right-to-left sweep after every FPE round. The change is reversible, but it propagates across the value, so the ciphertext does not expose the original digit distance.
+              </p>
+              <div className="grid grid-cols-3 gap-3 text-sm">
+                <div className="rounded-xl bg-slate-50 border border-slate-200 p-4">
+                  <div className="text-xs font-bold uppercase text-slate-500 mb-1">Input A</div>
+                  <div className="font-mono font-bold text-slate-800">65556</div>
+                </div>
+                <div className="rounded-xl bg-slate-50 border border-slate-200 p-4">
+                  <div className="text-xs font-bold uppercase text-slate-500 mb-1">Input B</div>
+                  <div className="font-mono font-bold text-slate-800">65553</div>
+                </div>
+                <div className="rounded-xl bg-emerald-50 border border-emerald-200 p-4">
+                  <div className="text-xs font-bold uppercase text-emerald-700 mb-1">Guarantee</div>
+                  <div className="font-semibold text-emerald-800">Same length and character class; exact reversal with the matching settings.</div>
+                </div>
               </div>
             </BigCard>
 
@@ -3099,7 +3120,7 @@ export function GuideSection() {
                 {decShifts.length > 14 && <div className="flex items-center text-slate-400 text-sm italic">+{decShifts.length-14} more…</div>}
               </div>
               <div className="bg-blue-50 rounded-xl p-4 text-sm text-blue-800 mt-3">
-                <strong>Same keystream bytes, reversed operations.</strong> For each character, the same PRNG bytes are re-derived from the seeds and column IV. Decryption then applies the 5 sub-ops in <em>reverse order</em>, using each operation's mathematical inverse: add↔subtract, multiply↔divide by modular inverse, flip↔flip (its own inverse).
+                <strong>Same keystream bytes, reversed diffusion and operations.</strong> Decryption first reverses the right-to-left and left-to-right keyed sweeps, then re-derives the same PRNG bytes from the seeds and column IV and applies the 5 sub-ops in <em>reverse order</em>: add↔subtract, multiply↔divide by modular inverse, flip↔flip (its own inverse).
               </div>
             </div>
 
@@ -3194,7 +3215,7 @@ export function GuideSection() {
                 {/* 4-round label */}
                 <div className="flex flex-col items-center gap-0.5 pt-1">
                   <div className="w-px h-2 bg-slate-300"/>
-                  <div className="text-[10px] text-slate-500 font-semibold uppercase tracking-wide">4-round character shifting</div>
+                  <div className="text-[10px] text-slate-500 font-semibold uppercase tracking-wide">4-round FPE + whole-value diffusion</div>
                   <div className="w-px h-2 bg-slate-300"/>
                 </div>
 
@@ -3356,7 +3377,7 @@ export function GuideSection() {
                     name: "Seed-derived keystream",
                     icon: "🔗",
                     badge: "bg-indigo-100 text-indigo-700",
-                    body: "Each character's five effective keystream bytes are formed by XOR-ing the raw PRNG bytes with rotl8(cbc, j) for j = 0…4, where cbc is updated after each character: cbc ← ((cbc << 3) ⊕ charCode(encChar) ⊕ rawKs4) & 0xFF. The rawKs4 term is a secret key-derived byte that cannot be reconstructed from the ciphertext alone. This means: (1) every character's keystream depends on all preceding ciphertext characters, (2) reconstructing the keystream without the key is infeasible even with chosen-plaintext access.",
+                     body: "After each character-preserving FPE round, two keyed triangular sweeps mix neighbouring positions across the complete value. The sweeps use modular addition, preserve width and character class, and are reversed exactly during decryption. A one-character input change therefore propagates across the anonymized value instead of remaining isolated to one position.",
                     check: true
                   },
                   {
@@ -3391,7 +3412,7 @@ export function GuideSection() {
                     name: "No identity leakage",
                     icon: "👤",
                     badge: "bg-slate-100 text-slate-700",
-                    body: "The runtime preserves character classes and is reversible with the matching key material. It does not guarantee that every character changes on every round: the five operations can cancel, and a final value may occasionally equal its input.",
+                     body: "The runtime preserves character classes and is reversible with the matching key material. Diffusion makes nearby plaintexts less visibly similar, but it does not promise that every output character changes for every input.",
                     check: true
                   },
                 ].map(p => (
