@@ -42,3 +42,17 @@ mtime_ms = 1789031285942
 storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:6dcc3020-db1f-4da6-a42a-2e6c0dc07e36/bbc92119-db75-47f0-8493-f6548265fded/2695c644-a7d6-406d-a5ac-65144d22a701"
 storage_version_token = "1789031290948774"
 content_type = "text/markdown"
+
+[[outputs]]
+id = "9FnfvwnO2F6UL-kZlsxfo"
+uri = "file://AIRAVATA_DEA_Software_Usage_Steps.docx"
+type = "word_document"
+title = "AIRAVATA DEA Software Usage Guide"
+description = "Word document containing the complete step-by-step usage guide with embedded high-resolution screenshots and captions."
+logical_id = "0c861b95-5ab8-4c95-ba88-96144c1bcc7a"
+content_hash = "sha256:0b6b1c8183f8c7facccb1303ab5f093c2a618aa76cc302607ec32ce4ef2cd058"
+size = 1983376
+mtime_ms = 1789031987546
+storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:6dcc3020-db1f-4da6-a42a-2e6c0dc07e36/0c861b95-5ab8-4c95-ba88-96144c1bcc7a/52029c63-a47a-4545-8848-862b34bd7fb1"
+storage_version_token = "1789031998888541"
+content_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
