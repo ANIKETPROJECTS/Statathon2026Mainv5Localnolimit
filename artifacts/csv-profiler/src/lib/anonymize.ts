@@ -950,29 +950,8 @@ export interface AnonymizeResult {
 
 // ── Key chain resolution ──────────────────────────────────────────────────────
 
-// v1 (sync) — preserved for legacy decryption of v1 CSV files.
-export function resolveKeyChain(options: AnonymizeOptions): string[] {
-  if (options.keyMode === "hex") {
-    const base = (options.keyHex ?? "").toLowerCase().trim();
-    if (!/^[0-9a-f]{64}$/.test(base))
-      throw new Error("A raw hex key must contain exactly 64 hexadecimal characters.");
-    let rolling = (parseInt(base.slice(0, 8), 16) ^ 0xdeadbeef) >>> 0;
-    return [0, 1, 2, 3].map(i => {
-      rolling = (Math.imul(rolling, 0x9e3779b9) ^ (i * 0x5a5a5a5b)) >>> 0;
-      rolling = (rolling ^ (rolling >>> 16)) >>> 0;
-      return generateRandomKey(rolling);
-    });
-  }
-  if (options.keyMode === "pbkdf2") {
-    if (options.passphrase.trim().length === 0)
-      throw new Error("A passphrase is required when PBKDF2 mode is selected.");
-    let tag = "";
-    return [0, 1, 2, 3].map(i => {
-      tag += `\x00R${i}`;
-      return deriveKeyFromPassphrase_v1(options.passphrase + tag, options.pbkdf2Iterations);
-    });
-  }
-  const s = options.seeds;
+function resolveSeedKeyChain(seeds?: number[]): string[] {
+  const s = seeds ?? [42, 137, 2024, 7];
   const ordered = [s[0] ?? 42, s[1] ?? 137, s[2] ?? 2024, s[3] ?? 7];
   let rolling = 0x9e3779b9;
   for (const seed of ordered) {
@@ -990,6 +969,37 @@ export function resolveKeyChain(options: AnonymizeOptions): string[] {
   });
 }
 
+// v1 (sync) — preserved for legacy decryption of v1 CSV files.
+export function resolveKeyChain(options: AnonymizeOptions): string[] {
+  if (options.keyMode === "hex") {
+    const base = (options.keyHex ?? "").toLowerCase().trim();
+    if (!/^[0-9a-f]{64}$/.test(base))
+      throw new Error("A raw hex key must contain exactly 64 hexadecimal characters.");
+    // Older exports displayed the first derived round key even when the
+    // source key mode was seed-based. Treat that value as a portable seed-key
+    // fingerprint when it matches the currently entered seed chain. This
+    // keeps existing key downloads decryptable without changing raw-hex mode.
+    const seedChain = resolveSeedKeyChain(options.seeds);
+    if (base === seedChain[0]) return seedChain;
+    let rolling = (parseInt(base.slice(0, 8), 16) ^ 0xdeadbeef) >>> 0;
+    return [0, 1, 2, 3].map(i => {
+      rolling = (Math.imul(rolling, 0x9e3779b9) ^ (i * 0x5a5a5a5b)) >>> 0;
+      rolling = (rolling ^ (rolling >>> 16)) >>> 0;
+      return generateRandomKey(rolling);
+    });
+  }
+  if (options.keyMode === "pbkdf2") {
+    if (options.passphrase.trim().length === 0)
+      throw new Error("A passphrase is required when PBKDF2 mode is selected.");
+    let tag = "";
+    return [0, 1, 2, 3].map(i => {
+      tag += `\x00R${i}`;
+      return deriveKeyFromPassphrase_v1(options.passphrase + tag, options.pbkdf2Iterations);
+    });
+  }
+  return resolveSeedKeyChain(options.seeds);
+}
+
 // v2 (async) — uses Web Crypto PBKDF2 for passphrase mode and mixes the export
 // salt into seed mode so the same seeds produce different keys in each export run.
 export async function resolveKeyChainAsync(options: AnonymizeOptions): Promise<string[]> {
@@ -1000,6 +1010,10 @@ export async function resolveKeyChainAsync(options: AnonymizeOptions): Promise<s
     const base = (options.keyHex ?? "").toLowerCase().trim();
     if (!/^[0-9a-f]{64}$/.test(base))
       throw new Error("A raw hex key must contain exactly 64 hexadecimal characters.");
+    if (!exportSalt) {
+      const seedChain = resolveSeedKeyChain(options.seeds);
+      if (base === seedChain[0]) return seedChain;
+    }
     let rolling = (parseInt(base.slice(0, 8), 16) ^ 0xdeadbeef) >>> 0;
     return [0, 1, 2, 3].map(i => {
       rolling = (Math.imul(rolling, 0x9e3779b9) ^ (i * 0x5a5a5a5b)) >>> 0;

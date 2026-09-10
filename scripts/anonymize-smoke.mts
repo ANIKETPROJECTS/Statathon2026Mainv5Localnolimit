@@ -55,6 +55,24 @@ assert(
   "compact export contains a comment line"
 );
 
+const displayedSeedKeyExport = await encryptFWFToBlob(
+  raw,
+  fields,
+  new Set(["A", "C"]),
+  base,
+  () => {},
+);
+const displayedSeedKeyDecrypt = await decryptCSVToBlob(
+  await displayedSeedKeyExport.blob.text(),
+  new Set(["A", "C"]),
+  { ...base, keyMode: "hex", keyHex: displayedSeedKeyExport.keyHex },
+  () => {},
+);
+assert(
+  await displayedSeedKeyDecrypt.text() === expected,
+  "displayed seed-derived key was not accepted for decryption",
+);
+
 const streamed = await encryptFWFFileToStream(
   new File([raw], "stream-sample.txt"),
   fields,
