@@ -685,6 +685,18 @@ export default function FWFConverter() {
     }));
   }, [layouts]);
 
+  const activateAllDataFiles = useCallback(() => {
+    setDataFiles(prev => prev.map(df => {
+      if (df.activated || !df.layoutId || df.lineCount <= 0) return df;
+      const lo = layouts.find(l => l.id === df.layoutId);
+      return {
+        ...df,
+        activated: true,
+        encColsList: lo?.result?.fields.map(f => f.varName) ?? [],
+      };
+    }));
+  }, [layouts]);
+
   const handleCommonColumnsChange = useCallback((next: Set<string>) => {
     setCommonSelectedColumns([...next]);
     setDataFiles(prev => {
@@ -994,6 +1006,8 @@ export default function FWFConverter() {
     )).filter(column => commonColumnNames.includes(column)),
   );
   const filesMissingColumns = activatedFiles.filter(df => df.encColsList.length === 0);
+  const pendingDataFiles = dataFiles.filter(df => !df.activated);
+  const allDataFilesReady = dataFiles.length > 1 && dataFiles.every(df => df.layoutId && df.lineCount > 0);
 
   const phase = readyLayouts.length === 0 ? 0 : assignedFiles.length === 0 ? 1 : 2;
 
@@ -1032,7 +1046,7 @@ export default function FWFConverter() {
 
         {/* LEFT: Layout Manager */}
         <div className="border border-gray-200 rounded-2xl p-6 space-y-4 min-w-0 overflow-hidden">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <h2 className="text-lg font-semibold text-black">Step 1 — Layout files</h2>
               <p className="text-sm text-gray-500 mt-0.5">Excel (.xlsx) or CSV with Field_Name, Start, End columns</p>
@@ -1105,12 +1119,23 @@ export default function FWFConverter() {
               <h2 className="text-lg font-semibold text-black">Step 2 — Data files (.TXT)</h2>
               <p className="text-sm text-gray-500 mt-0.5">Fixed-width records — assign a layout to each</p>
             </div>
-            <button
-              onClick={() => dataInputRef.current?.click()}
-              disabled={readyLayouts.length === 0}
-              className="flex items-center gap-1.5 text-sm font-semibold px-3 py-2 rounded-xl bg-black text-white hover:bg-gray-800 disabled:opacity-40 transition-colors flex-shrink-0">
-              <Plus className="w-4 h-4" />Add files
-            </button>
+            <div className="flex flex-wrap items-center gap-2 flex-shrink-0">
+              {dataFiles.length > 1 && pendingDataFiles.length > 0 && (
+                <button
+                  onClick={activateAllDataFiles}
+                  disabled={!allDataFilesReady}
+                  title={allDataFilesReady ? "Process all uploaded TXT files" : "Assign a layout to every file first"}
+                  className="flex items-center gap-1.5 text-sm font-semibold px-3 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-40 transition-colors whitespace-nowrap">
+                  <Layers className="w-4 h-4" />Process all files
+                </button>
+              )}
+              <button
+                onClick={() => dataInputRef.current?.click()}
+                disabled={readyLayouts.length === 0}
+                className="flex items-center gap-1.5 text-sm font-semibold px-3 py-2 rounded-xl bg-black text-white hover:bg-gray-800 disabled:opacity-40 transition-colors flex-shrink-0">
+                <Plus className="w-4 h-4" />Add files
+              </button>
+            </div>
             <input ref={dataInputRef} type="file" accept=".txt,.dat,.fwf,.data" multiple className="hidden"
               onChange={e => { const f = Array.from(e.target.files ?? []); if (f.length) handleDataFiles(f); e.target.value = ""; }} />
           </div>
