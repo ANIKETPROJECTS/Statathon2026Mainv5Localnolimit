@@ -1023,16 +1023,18 @@ export default function FWFConverter() {
   const pendingDataFiles = dataFiles.filter(df => !df.activated);
   const allDataFilesReady = dataFiles.length > 1 && dataFiles.every(df => df.layoutId && df.lineCount > 0);
   const anonymizedFileCount = activatedFiles.filter(df => df.step === "anon-done").length;
-  const currentAnonymizingFile = activatedFiles.find(df => df.encRunning);
+  const anonymizingFiles = activatedFiles.filter(df => df.encRunning);
+  const currentAnonymizingFile = anonymizingFiles[0];
+  const inProgressContribution = anonymizingFiles.reduce((sum, df) => sum + df.encProgress / 100, 0);
   const overallAnonymizationProgress = activatedFiles.length > 0
     ? Math.min(100, Math.round((
-      anonymizedFileCount + (currentAnonymizingFile ? currentAnonymizingFile.encProgress / 100 : 0)
+      anonymizedFileCount + inProgressContribution
     ) / activatedFiles.length * 100))
     : 0;
   const overallAnonymizationLabel = anonymizedFileCount === activatedFiles.length
     ? `All ${activatedFiles.length} files anonymized`
-    : currentAnonymizingFile
-      ? `Anonymizing ${currentAnonymizingFile.fileName} · ${anonymizedFileCount} of ${activatedFiles.length} files complete`
+    : anonymizingFiles.length > 0
+      ? `Anonymizing ${anonymizingFiles.length} files · ${anonymizedFileCount} of ${activatedFiles.length} files complete`
       : `${anonymizedFileCount} of ${activatedFiles.length} files anonymized`;
   const allAnonFilesCollapsed = activatedFiles.length > 1
     && activatedFiles.every(df => collapsedAnonFiles.has(df.id));
@@ -1276,7 +1278,7 @@ export default function FWFConverter() {
                     className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-700 disabled:opacity-50 transition-colors whitespace-nowrap"
                   >
                     {batchEncryptRunning
-                      ? <><Spin />Anonymizing {batchEncryptIndex} of {activatedFiles.length}…</>
+                      ? <><Spin />Anonymizing all {activatedFiles.length} files…</>
                       : <><Layers className="w-4 h-4" />Anonymize all files</>}
                   </button>
                 </div>
