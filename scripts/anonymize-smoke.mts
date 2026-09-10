@@ -40,13 +40,18 @@ const base: AnonymizeOptions = {
   passphrase: "",
   pbkdf2Iterations: 100_000,
   deterministic: true,
-  exportSalt: "0123456789abcdef0123456789abcdef",
 };
 
 const deterministic1 = await roundTrip(base, "all");
 const deterministic2 = await roundTrip(base, "all");
 assert(deterministic1.encryptedText === deterministic2.encryptedText, "deterministic output changed");
 assert(deterministic1.decryptedText === expected, "deterministic round trip failed");
+assert(!deterministic1.encryptedText.includes("AIRAVATA-"), "compact export contains metadata");
+assert(!deterministic1.encryptedText.includes("HMAC"), "compact export contains an HMAC");
+assert(
+  deterministic1.encryptedText.split(/\r?\n/).every(line => !line.trimStart().startsWith("#")),
+  "compact export contains a comment line"
+);
 
 const selective = await roundTrip({ ...base, deterministic: false }, "subset");
 const selectiveLines = selective.decryptedText.trimEnd().split("\n");
@@ -56,23 +61,22 @@ assert(selectiveLines.slice(1).every((line, index) => {
   return cells[0] !== records[index][0] && cells[1] === records[index][1] && cells[2] === records[index][2];
 }), "selective non-deterministic decrypt did not restore the selected column");
 
-const metadataOptions: AnonymizeOptions = {
+const alphanumericOptions: AnonymizeOptions = {
   ...base,
-  deterministic: false,
   alphanumericOutput: true,
 };
-const metadataEncrypted = await encryptFWFToBlob(
-  raw, fields, new Set(["A", "B", "C"]), metadataOptions, () => {}
+const alphanumericEncrypted = await encryptFWFToBlob(
+  raw, fields, new Set(["A", "B", "C"]), alphanumericOptions, () => {}
 );
-const metadataDecrypted = await decryptCSVToBlob(
-  await metadataEncrypted.blob.text(),
+const alphanumericDecrypted = await decryptCSVToBlob(
+  await alphanumericEncrypted.blob.text(),
   new Set(["A", "B", "C"]),
-  { ...metadataOptions, deterministic: true, alphanumericOutput: false },
+  alphanumericOptions,
   () => {}
 );
 assert(
-  await metadataDecrypted.text() === expected,
-  "metadata-driven deterministic/alphanumeric round trip failed"
+  await alphanumericDecrypted.text() === expected,
+  "seed-keyed alphanumeric round trip failed"
 );
 
 const hexKey = "0123456789abcdef".repeat(4);
@@ -151,8 +155,8 @@ async function encryptSingleValue(value: string, options: AnonymizeOptions): Pro
   ];
   const result = await encryptFWFToBlob(anchor + "\n" + dataLine, fields, new Set(["V"]), options, () => {});
   const csvText = await result.blob.text();
-  // Skip v2/v3 metadata comments and read the second data row.
-  const lines = csvText.trimEnd().split("\n").filter(line => line.trim() && !line.startsWith("#"));
+  // Read the second data row after the simple CSV header.
+  const lines = csvText.trimEnd().split("\n").filter(line => line.trim());
   return (parseCsvLine(lines[2] ?? "")[1]) ?? "";
 }
 
@@ -162,12 +166,7 @@ async function decryptSingleValue(encrypted: string, options: AnonymizeOptions):
   const width = 1 + encrypted.length;
   const anchorEnc = ANCHOR_CHAR.repeat(width); // anchor row V col is "AAA..." — decrypts to itself
   const csvText = [
-    "# AIRAVATA-FORMAT: v3",
-    `# AIRAVATA-EXPORT-SALT: ${options.exportSalt ?? "0123456789abcdef0123456789abcdef"}`,
-    `# AIRAVATA-DETERMINISTIC: ${options.deterministic ? "true" : "false"}`,
-    `# AIRAVATA-ALPHANUMERIC: ${options.alphanumericOutput ? "true" : "false"}`,
-    "",
-    `P,V`,
+    "P,V",
     `${PREFIX_CHAR},${csvQuote(anchorEnc)}`,
     `${PREFIX_CHAR},${csvQuote(encrypted)}`,
     "",

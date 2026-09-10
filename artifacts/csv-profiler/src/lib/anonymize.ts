@@ -15,10 +15,10 @@
 // v2 (legacy): all security fixes applied — per-value keystream, CBC diffusion, CSPRNG-derived
 //              export salt, HMAC-SHA256 integrity, and Web Crypto PBKDF2. Its deterministic
 //              per-value nonce could not be reproduced during decryption.
-// v3 (current): uses a reproducible column nonce in deterministic mode, while retaining
-//               the v2 metadata, salt, CBC, HMAC, and PBKDF2 protections.
+// v1 (current): compact seed-only CSV format. New exports contain no metadata,
+//               export salt, HMAC, or other auxiliary key material.
 
-export const FORMAT_VERSION = "v3";
+export const FORMAT_VERSION = "v1";
 
 // ── §9 — xorshift128+ PRNG ────────────────────────────────────────────────────
 function makeKeystream(seed: number) {
@@ -911,8 +911,8 @@ function ksSize(valueLen: number): number { return valueLen * 5 + 64; }
 
 const DET_KS_SIZE = 256 * 5 + 64;
 
-// ── Streaming encrypt: FWF raw text → anonymized CSV Blob (v2) ────────────────
-export async function encryptFWFToBlob(
+// ── Legacy salted exporter retained for compatibility with older code paths ────
+async function encryptFWFToBlobLegacyV3(
   rawText: string,
   fields: FieldSpec[],
   encCols: ReadonlySet<string>,
@@ -1052,6 +1052,116 @@ export async function encryptFWFToBlob(
     blob: new Blob([finalContent], { type: "text/csv;charset=utf-8;" }),
     keyHex,
     exportSalt,
+    auditLog,
+  };
+}
+
+// ── Streaming encrypt: FWF raw text → compact seed-keyed CSV ────────────────
+// New exports intentionally contain only the CSV header and data rows. The
+// selected seeds/key mode are the complete key material; no salt, HMAC, or
+// algorithm metadata is written into the file.
+export async function encryptFWFToBlob(
+  rawText: string,
+  fields: FieldSpec[],
+  encCols: ReadonlySet<string>,
+  options: AnonymizeOptions,
+  onProgress: (pct: number) => void
+): Promise<AnonymizeResult> {
+  const keyChain = resolveKeyChain(options);
+  const keyHex = options.keyMode === "hex"
+    ? (options.keyHex ?? "").toLowerCase().trim()
+    : keyChain[0];
+
+  const alnumKey = options.alphanumericOutput ? deriveAlnumKey(keyChain) : "";
+  const colAlnumKs: Record<string, Uint8Array> = {};
+  if (options.alphanumericOutput) {
+    for (const f of fields) {
+      if (encCols.has(f.varName)) {
+        colAlnumKs[f.varName] = makeCellKsBytes(
+          DET_KS_SIZE, alnumKey, hashColIV(alnumKey, f.varName)
+        );
+      }
+    }
+  }
+
+  const lines = rawText.split(/\r?\n/);
+  let dataLines = lines.filter(l => l.length > 0);
+  if (dataLines.length > 0 && dataLines[0].includes(",")) dataLines = dataLines.slice(1);
+  const total = dataLines.length;
+  const csvHeader = fields.map(f => csvEscape(f.varName)).join(",");
+  const chunks: string[] = [csvHeader + "\n"];
+  const detCache = new Map<string, string>();
+  const ivCounters: Record<string, number> = {};
+
+  for (let i = 0; i < total; i += STREAM_CHUNK) {
+    const end = Math.min(i + STREAM_CHUNK, total);
+    const rowLines: string[] = [];
+
+    for (let li = i; li < end; li++) {
+      const line = dataLines[li];
+      const csvCells: string[] = [];
+
+      for (const f of fields) {
+        let val = line.padEnd(f.end).substring(f.start - 1, f.end).trim();
+
+        if (encCols.has(f.varName) && val.length > 0) {
+          if (options.deterministic) {
+            const cacheKey = f.varName + "\x00" + val;
+            if (detCache.has(cacheKey)) {
+              val = detCache.get(cacheKey)!;
+            } else {
+              const ksArr = keyChain.map(kh =>
+                makeCellKsBytes(DET_KS_SIZE, kh, hashColIV(kh, f.varName))
+              );
+              let encrypted = encryptChain4(ksArr, val);
+              if (options.alphanumericOutput) {
+                encrypted = encryptAlphanumCell(colAlnumKs[f.varName], encrypted);
+              }
+              detCache.set(cacheKey, encrypted);
+              val = encrypted;
+            }
+          } else {
+            ivCounters[f.varName] = ((ivCounters[f.varName] ?? 0) + 1) >>> 0;
+            const ivCounter = ivCounters[f.varName];
+            const columnSeed = hashColIV(keyChain[0], f.varName);
+            const ksArr = keyChain.map((kh, ri) =>
+              makeCellKsBytes(
+                ksSize(val.length), kh,
+                (ivCounter ^ columnSeed ^ (ri * 0x12345679)) >>> 0
+              )
+            );
+            val = encryptChain4(ksArr, val);
+            if (options.alphanumericOutput) {
+              val = encryptAlphanumCell(colAlnumKs[f.varName], val);
+            }
+          }
+        }
+        csvCells.push(csvEscape(val));
+      }
+      rowLines.push(csvCells.join(","));
+    }
+
+    chunks.push(rowLines.join("\n") + "\n");
+    onProgress(total === 0 ? 100 : Math.round((end / total) * 100));
+    await new Promise(r => setTimeout(r, 0));
+  }
+
+  const keyFingerprint = await computeKeyFingerprint(keyChain);
+  const auditLog: AnonymizeAuditLog = {
+    timestamp: new Date().toISOString(),
+    formatVersion: FORMAT_VERSION,
+    keyMode: options.keyMode,
+    keyFingerprint,
+    exportSalt: "",
+    columnsProcessed: [...encCols],
+    cbcEnabled: false,
+    hmacPresent: false,
+  };
+
+  return {
+    blob: new Blob([chunks.join("")], { type: "text/csv;charset=utf-8;" }),
+    keyHex,
+    exportSalt: "",
     auditLog,
   };
 }
@@ -1212,6 +1322,16 @@ export async function decryptCSVToBlob(
     }
   }
 
+  const alnumKey = options.alphanumericOutput ? deriveAlnumKey(keyChain) : "";
+  const colAlnumKs: Record<string, Uint8Array> = {};
+  if (options.alphanumericOutput) {
+    for (const col of decCols) {
+      colAlnumKs[col] = makeCellKsBytes(
+        DET_KS_SIZE, alnumKey, hashColIV(alnumKey, col)
+      );
+    }
+  }
+
   const dataLines: string[] = [];
   for (let i = headerIdx + 1; i < lines.length; i++) {
     if (lines[i].trim().length > 0) dataLines.push(lines[i]);
@@ -1242,6 +1362,7 @@ export async function decryptCSVToBlob(
             if (detCache.has(ck)) {
               val = detCache.get(ck)!;
             } else {
+              if (options.alphanumericOutput) val = decryptAlphanumCell(colAlnumKs[col], val);
               const dec = decryptChain4(colKs4[col], val);
               detCache.set(ck, dec);
               val = dec;
@@ -1253,6 +1374,7 @@ export async function decryptCSVToBlob(
             const ksArr = keyChain.map((kh, ri) =>
               makeCellKsBytes(ksSize(val.length), kh, (ivCounter ^ columnSeed ^ (ri * 0x12345679)) >>> 0)
             );
+            if (options.alphanumericOutput) val = decryptAlphanumCell(colAlnumKs[col], val);
             val = decryptChain4(ksArr, val);
           }
         }

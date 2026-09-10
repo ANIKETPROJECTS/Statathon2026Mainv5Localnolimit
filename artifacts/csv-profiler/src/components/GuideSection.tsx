@@ -169,8 +169,8 @@ function modInverse(a: number, m: number): number {
 // Covers: space, !"#$%&'()*+,-./ (33–47), :;<=>?@ (58–64), [\]^_` (91–96), {|}~ (123–126).
 const SYMBOL_CHARS = ' !"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~';
 
-// Alphanumeric output alphabet: digits 0–9 then lowercase a–z (S=36).
-const ALNUM_CHARS = "0123456789abcdefghijklmnopqrstuvwxyz";
+// Reversible alphanumeric output alphabet used by anonymize.ts (S=62).
+const ALNUM_CHARS = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
 // Precomputed coprime multipliers per alphabet size (excluding 1)
 const COPRIME_MULS: Record<number, number[]> = {
@@ -371,37 +371,27 @@ function fpeDecryptChar5(ch: string, ks5: number[], charIdx: number): { out: str
   return { out: String.fromCharCode(v + base), microOps };
 }
 
-// v2 runRound: CBC-enhanced — computes rotl8-spread effective ks bytes and
-// threads the CBC chaining state (rawKs4 mixed in) through each character.
-// Matches encryptFPECellV2 / decryptFPECellV2 in anonymize.ts exactly.
+// Compact-format round: the five raw keystream bytes drive the five
+// reversible operations directly. There is no CBC state in the seed-only
+// export format.
 function runRound(value: string, ks: Uint8Array, mode: "enc" | "dec"): { output: string; charShifts: CharShift[] } {
   const chars = [...value];
   let ki = 0;
-  let cbc = 0;
   const charShifts: CharShift[] = [];
   let output = "";
   for (let idx = 0; idx < chars.length; idx++) {
     const ch = chars[idx];
-    const cbcBefore = cbc;
-    // Capture raw bytes before CBC XOR
     const rawKs5 = Array.from({ length: 5 }, (_, j) => ks[(ki + j) % ks.length]);
-    const rawKs4 = rawKs5[4]; // secret byte mixed into cbc update (Correction A)
-    // rotl8 spread: byte j gets cbc rotated left by j (Correction A)
-    const effectiveKs5 = rawKs5.map((b, j) => (b ^ rotl8(cbc, j)) & 0xff);
+    const effectiveKs5 = rawKs5;
     if (mode === "enc") {
       const { out, microOps, isLeadingZeroPassthrough } = fpeEncryptChar5(ch, effectiveKs5, idx);
       ki += 5;
-      const cbcAfter = (((cbc << 3) ^ out.charCodeAt(0) ^ rawKs4) & 0xff);
-      cbc = cbcAfter;
-      charShifts.push({ from: ch, to: out, k: effectiveKs5[0], changed: ch !== out, microOps, isLeadingZeroPassthrough, cbcBefore, cbcAfter, rawKs4, rawKs5, effectiveKs5 });
+      charShifts.push({ from: ch, to: out, k: effectiveKs5[0], changed: ch !== out, microOps, isLeadingZeroPassthrough, cbcBefore: 0, cbcAfter: 0, rawKs4: rawKs5[4], rawKs5, effectiveKs5 });
       output += out;
     } else {
       const { out, microOps, isLeadingZeroPassthrough } = fpeDecryptChar5(ch, effectiveKs5, idx);
       ki += 5;
-      // CBC update uses the CIPHERTEXT char code (input to decrypt), not the plaintext
-      const cbcAfter = (((cbc << 3) ^ ch.charCodeAt(0) ^ rawKs4) & 0xff);
-      cbc = cbcAfter;
-      charShifts.push({ from: ch, to: out, k: effectiveKs5[0], changed: ch !== out, microOps, isLeadingZeroPassthrough, cbcBefore, cbcAfter, rawKs4, rawKs5, effectiveKs5 });
+      charShifts.push({ from: ch, to: out, k: effectiveKs5[0], changed: ch !== out, microOps, isLeadingZeroPassthrough, cbcBefore: 0, cbcAfter: 0, rawKs4: rawKs5[4], rawKs5, effectiveKs5 });
       output += out;
     }
   }
@@ -411,20 +401,19 @@ function runRound(value: string, ks: Uint8Array, mode: "enc" | "dec"): { output:
 interface CharShift {
   from: string; to: string; k: number; changed: boolean;
   microOps: MicroOp[]; isLeadingZeroPassthrough?: boolean;
-  // v2 CBC fields (present for every character)
-  cbcBefore: number;      // cbc state entering this character
-  cbcAfter: number;       // cbc state after this character
-  rawKs4: number;         // raw 5th ks byte (secret, key-derived) mixed into cbc
-  rawKs5: number[];       // raw PRNG bytes before rotl8 XOR
-  effectiveKs5: number[]; // effective ks bytes after rotl8(cbc,j) XOR
+  // Kept in the trace shape for the existing UI; compact mode has no CBC.
+  cbcBefore: number;
+  cbcAfter: number;
+  rawKs4: number;
+  rawKs5: number[];
+  effectiveKs5: number[];
 }
 
 // ── Alphanumeric output helpers (mirror of anonymize.ts) ──────────────────────
 
-// Compute per-character trace for the alphanumeric conversion pass (S=36).
-// No CBC in the alnum pass; CBC fields are zeroed.
+// Compute per-character trace for the alphanumeric conversion pass (S=62).
 function computeAlnumShifts(value: string, ksBytes: Uint8Array): CharShift[] {
-  const S = ALNUM_CHARS.length; // 36
+  const S = ALNUM_CHARS.length;
   const muls = getMuls(S);
   const shifts: CharShift[] = [];
   let ki = 0;
@@ -433,7 +422,7 @@ function computeAlnumShifts(value: string, ksBytes: Uint8Array): CharShift[] {
     let idx: number | null = null;
     if (code >= 48 && code <= 57)  idx = code - 48;
     else if (code >= 97 && code <= 122) idx = code - 87;
-    else if (code >= 65 && code <= 90)  idx = code - 55;
+    else if (code >= 65 && code <= 90)  idx = code - 29;
     const rawKs5 = Array.from({ length: 5 }, (_, j) => ksBytes[(ki + j) % ksBytes.length]);
     if (idx !== null) {
       let v = idx;
@@ -483,7 +472,7 @@ function deriveAlnumKeyV2(keys: string[], exportSalt = ""): string {
 }
 
 function encryptAlphanumCell(ksBytes: Uint8Array, value: string): string {
-  const S = ALNUM_CHARS.length; // 36
+  const S = ALNUM_CHARS.length;
   const muls = getMuls(S);
   const chars = [...value];
   let ki = 0;
@@ -492,7 +481,7 @@ function encryptAlphanumCell(ksBytes: Uint8Array, value: string): string {
     let idx: number | null = null;
     if (code >= 48 && code <= 57)  idx = code - 48;
     else if (code >= 97 && code <= 122) idx = code - 87;
-    else if (code >= 65 && code <= 90)  idx = code - 55;
+    else if (code >= 65 && code <= 90)  idx = code - 29;
     if (idx !== null) {
       let v = idx;
       for (let i = 0; i < 5; i++) {
@@ -521,7 +510,7 @@ interface KeyDerivStep {
 interface Trace {
   keys: string[];
   colIVs: number[];      // per-round base column IVs (hashColIV)
-  valueNonces: number[]; // per-round per-value nonces (hashValueNonce) — v2 fix
+  valueNonces: number[]; // kept as a compatibility alias for the guide trace
   encStages: string[];
   encShifts: CharShift[][];
   decStages: string[];
@@ -535,13 +524,6 @@ interface Trace {
   masterKey: string;
   ksFirstBytes: number[][];
 }
-
-// Fixed demo export salt used throughout the guide so all live calculations are
-// deterministic and reproducible.  In real exports a fresh CSPRNG 128-bit salt is
-// generated per run — that per-export freshness is what guards the ~2³² collision
-// bound.  Using a constant here lets us show exact byte-level steps in the deep
-// dive without the numbers changing on every reload.
-const GUIDE_DEMO_EXPORT_SALT = "deadbeefcafebabe0123456789abcdef";
 
 function computeTrace(seeds: number[], colName: string, rawValue: string): Trace {
   const value = rawValue || "A";
@@ -572,12 +554,11 @@ function computeTrace(seeds: number[], colName: string, rawValue: string): Trace
     return generateRandomKey(rollingK);
   });
 
-  // v2: per-value nonces prevent keystream reuse across identical cell values
+  // The compact export uses the column IV directly. Same seeds + same column
+  // therefore reproduce the same keystream without any file-side salt.
   const colIVs = keys.map(k => hashColIV(k, colName));
-  const valueNonces = keys.map((k, i) => hashValueNonce(colIVs[i], value));
-
-  // v2: two-seed PRNG with full 128-bit export salt folded in (Corrections A+B)
-  const ksArr = keys.map((k, i) => makeCellKsBytesV2(value.length * 5 + 64, k, valueNonces[i], GUIDE_DEMO_EXPORT_SALT));
+  const valueNonces = colIVs;
+  const ksArr = keys.map((k, i) => makeCellKsBytes(value.length * 5 + 64, k, colIVs[i]));
 
   const encStages: string[] = [value];
   const encShifts: CharShift[][] = [];
@@ -595,8 +576,8 @@ function computeTrace(seeds: number[], colName: string, rawValue: string): Trace
   const decShifts: CharShift[][] = [];
   let dec = finalEncrypted;
   for (let i = 3; i >= 0; i--) {
-    // Re-derive the keystream from scratch — same seeds → same bytes, correct for decrypt
-    const ksForDec = makeCellKsBytesV2(value.length * 5 + 64, keys[i], valueNonces[i], GUIDE_DEMO_EXPORT_SALT);
+    // Re-derive the same column-keyed stream and reverse the five operations.
+    const ksForDec = makeCellKsBytes(value.length * 5 + 64, keys[i], colIVs[i]);
     const { output, charShifts } = runRound(dec, ksForDec, "dec");
     decStages.push(output);
     decShifts.push(charShifts);
@@ -605,15 +586,12 @@ function computeTrace(seeds: number[], colName: string, rawValue: string): Trace
 
   const ksFirstBytes = ksArr.map(ks => Array.from(ks.slice(0, 10)));
 
-  // Alphanumeric 5th pass — v2: uses deriveAlnumKeyV2 so export salt varies the pass
-  const alnumKey = deriveAlnumKeyV2(keys, GUIDE_DEMO_EXPORT_SALT);
+  // Optional alphanumeric 5th pass is also derived only from the round keys.
+  const alnumKey = deriveAlnumKey(keys);
   const alnumColIV = hashColIV(alnumKey, colName);
-  const alnumValueNonce = hashValueNonce(alnumColIV, finalEncrypted);
-  const alnumKs = makeCellKsBytesV2(finalEncrypted.length * 5 + 64, alnumKey, alnumValueNonce, GUIDE_DEMO_EXPORT_SALT);
+  const alnumKs = makeCellKsBytes(finalEncrypted.length * 5 + 64, alnumKey, alnumColIV);
   const alnumEncrypted = encryptAlphanumCell(alnumKs, finalEncrypted);
-  // Re-derive keystream for per-character trace (same parameters → same bytes)
-  const alnumKsTrace = makeCellKsBytesV2(finalEncrypted.length * 5 + 64, alnumKey, alnumValueNonce, GUIDE_DEMO_EXPORT_SALT);
-  const alnumShifts = computeAlnumShifts(finalEncrypted, alnumKsTrace);
+  const alnumShifts = computeAlnumShifts(finalEncrypted, alnumKs);
 
   return { keys, colIVs, valueNonces, encStages, encShifts, decStages, decShifts, finalEncrypted, alnumEncrypted, alnumShifts, finalDecrypted: dec, keyDerivSteps, masterSeed, masterKey, ksFirstBytes };
 }
@@ -1572,15 +1550,13 @@ export function GuideSection() {
           const keyFirst8Str = keyHex.slice(0, 8);
           const keyFirst8    = parseInt(keyFirst8Str, 16);
           const keySecond8   = parseInt(keyHex.slice(8, 16) || "0", 16);
-          const valueNonce   = trace.valueNonces[encRoundIdx];
           const colIV        = trace.colIVs[encRoundIdx];
-          // v2: fold full 128-bit export salt into two independent seeds
-          const saltWords    = [0, 8, 16, 24].map(i => parseInt(GUIDE_DEMO_EXPORT_SALT.slice(i, i + 8), 16));
-          let seedA          = ((keyFirst8 ^ valueNonce) ^ saltWords[0] ^ saltWords[1]) >>> 0;
-          let seedB          = (keySecond8 ^ saltWords[2] ^ saltWords[3]) >>> 0;
-          const aInit        = (seedA >>> 0) || 1;
-          const bInit        = (seedB >>> 0) || 2;
-          const prngSteps    = computePRNGStepsV2(seedA, seedB, 8);
+          const combinedSeed = (keyFirst8 ^ colIV) >>> 0;
+          const seedA        = combinedSeed;
+          const seedB        = combinedSeed;
+          const aInit        = (seedA ^ 0x9e3779b9) >>> 0 || 1;
+          const bInit        = (seedB ^ 0x6c62272e) >>> 0 || 2;
+          const prngSteps    = computePRNGSteps(combinedSeed, 8);
           const sel          = prngSteps[deepDiveByte] ?? prngSteps[0];
           const h8 = (n: number) => "0x" + n.toString(16).toUpperCase().padStart(8, "0");
           const Dec = ({ n }: { n: number }) => <span className="text-slate-500 text-xs ml-1">= {n.toLocaleString()}</span>;
@@ -1616,7 +1592,7 @@ export function GuideSection() {
               {/* Title */}
               <div className="text-center">
                 <div className="text-4xl mb-3">🔬</div>
-                <h2 className="text-2xl font-bold text-slate-800 mb-2">How a Combined Seed Generates Keystream Bytes</h2>
+                <h2 className="text-2xl font-bold text-slate-800 mb-2">How the Master Key Generates Keystream Bytes</h2>
                 <p className="text-slate-500 text-sm">Exact step-by-step trace of the xorshift128+ PRNG — using live values from your current input</p>
               </div>
 
@@ -1630,13 +1606,12 @@ export function GuideSection() {
                 ))}
               </div>
 
-              {/* §1 — Two-Seed Derivation (v2) */}
+              {/* §1 — Master key and column IV */}
               <BigCard color="bg-white border-purple-200">
-                <h3 className="text-base font-bold text-slate-800 mb-1">§1 — Two-Seed Derivation (v2)</h3>
+                <h3 className="text-base font-bold text-slate-800 mb-1">§1 — Master Key + Column IV</h3>
                 <p className="text-slate-500 text-xs mb-4">
-                  The v3 algorithm derives <strong>two independent 32-bit seeds</strong> (seedA and seedB) instead of a single combined seed.
-                  This lets all 128 bits of the per-export CSPRNG salt be folded in — seedA folds in the salt's first two 32-bit words, seedB folds in the last two.
-                  The value nonce (a per-cell hash) replaces the plain Column IV, so identical values in the same column produce different keystreams (Correction B).
+                  The compact format derives one reproducible keystream seed from the selected round key and the column name.
+                  No per-file salt or hidden key is added. The same seeds, master-key derivation, and column name always reproduce the same bytes for decryption.
                 </p>
                 {/* seedA derivation */}
                 <div className="mb-5">
@@ -1648,10 +1623,10 @@ export function GuideSection() {
                     </div>
                     <div className="text-slate-400 font-bold py-0.5 select-none">⊕</div>
                     <div className="bg-teal-50 border border-teal-200 rounded-xl px-4 py-2 text-center w-full max-w-sm">
-                      <div className="text-xs text-teal-600 font-semibold uppercase mb-0.5">Value Nonce (per-cell hash of colIV + value)</div>
-                      <span className="text-teal-700 font-bold">{h8(valueNonce)}</span>
+                      <div className="text-xs text-teal-600 font-semibold uppercase mb-0.5">Column IV (column-name hash)</div>
+                      <span className="text-teal-700 font-bold">{h8(colIV)}</span>
                     </div>
-                    <div className="text-slate-400 font-bold py-0.5 select-none">⊕ salt[0..7] ⊕ salt[8..15]</div>
+                    <div className="text-slate-400 font-bold py-0.5 select-none">⊕</div>
                     <div className="bg-green-50 border-2 border-green-300 rounded-xl px-4 py-2 text-center w-full max-w-sm">
                       <div className="text-xs text-green-600 font-semibold uppercase mb-0.5">Seed A</div>
                       <span className="text-green-700 font-bold text-lg">{h8(seedA)}</span>
@@ -1667,7 +1642,7 @@ export function GuideSection() {
                       <div className="text-xs text-slate-500 font-semibold uppercase mb-0.5">Key[8..15]</div>
                       <span className="text-slate-700 font-bold">0x{keyHex.slice(8,16).toUpperCase()}</span>
                     </div>
-                    <div className="text-slate-400 font-bold py-0.5 select-none">⊕ salt[16..23] ⊕ salt[24..31]</div>
+                    <div className="text-slate-400 font-bold py-0.5 select-none">same combined seed → second PRNG state</div>
                     <div className="bg-rose-50 border-2 border-rose-300 rounded-xl px-4 py-2 text-center w-full max-w-sm">
                       <div className="text-xs text-rose-600 font-semibold uppercase mb-0.5">Seed B</div>
                       <span className="text-rose-700 font-bold text-lg">{h8(seedB)}</span>
@@ -1676,19 +1651,15 @@ export function GuideSection() {
                   </div>
                 </div>
                 <div className="bg-purple-50 border border-purple-200 rounded-xl p-3 text-xs text-purple-800">
-                  <strong>Why two seeds?</strong> A single 32-bit seed can only carry 32 bits of external randomness. With seedA and seedB we can inject 64 additional bits from the export salt (on top of the key and value nonce), raising the per-cell keystream collision bound to ≈ 2³² — no two exports share the same keystream bytes even if value, key, and column are identical.
-                </div>
-                <div className="mt-3 bg-teal-50 border border-teal-200 rounded-xl p-3 text-xs text-teal-800">
-                  <strong>Demo salt:</strong> this guide uses the fixed value <code className="font-mono bg-teal-100 px-1 rounded">{GUIDE_DEMO_EXPORT_SALT}</code> so numbers remain reproducible.  In a real export, a fresh 128-bit CSPRNG salt is generated each time.
+                  <strong>Why two state values?</strong> xorshift128+ keeps two internal 32-bit state values. Both are reproducibly initialised from the same key-and-column seed; no extra file-side material is required.
                 </div>
               </BigCard>
 
-              {/* §2 — Initialise PRNG (v2) */}
+              {/* §2 — Initialise PRNG */}
               <BigCard color="bg-white border-indigo-200">
-                <h3 className="text-base font-bold text-slate-800 mb-1">§2 — Initialise PRNG State (makeKeystream2)</h3>
+                <h3 className="text-base font-bold text-slate-800 mb-1">§2 — Initialise PRNG State (xorshift128+)</h3>
                 <p className="text-slate-500 text-xs mb-4">
-                  In v3 the PRNG is seeded with <strong>two independent 32-bit values</strong> — seedA initialises state variable <code className="bg-slate-100 px-1 rounded">a</code> directly, seedB initialises <code className="bg-slate-100 px-1 rounded">b</code> directly.
-                  No fixed magic XOR constants are used here; all the external randomness has already been mixed in during seed derivation (§1).
+                  The combined key-and-column seed initialises the two xorshift128+ state variables with fixed constants. This is the same deterministic process used by the compact exporter and importer.
                 </p>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-4">
@@ -1713,7 +1684,7 @@ export function GuideSection() {
                   </div>
                 </div>
                 <div className="mt-3 bg-indigo-50 border border-indigo-200 rounded-xl p-3 text-xs text-indigo-800">
-                  <strong>v3 vs v1 difference:</strong> Previously both <em>a</em> and <em>b</em> were derived from the same single seed by XORing with different constants. That meant only 32 bits of external material influenced the initial state. Now <em>a</em> and <em>b</em> are independent, so 64 bits of external material (seedA ⊕ seedB) seeds the state — and the full 128-bit export salt is carried across both seeds.
+                  <strong>Reproducibility:</strong> the same round key and column IV always recreate the same initial PRNG state. Decryption simply regenerates the same bytes and applies the five operations in reverse order.
                 </div>
                 <p className="text-xs text-slate-400 mt-3">
                   ✦ The <code className="bg-slate-100 px-1 rounded">|| 1</code> / <code className="bg-slate-100 px-1 rounded">|| 2</code> fallbacks only fire if a seed is exactly zero — an extremely rare edge case that prevents the PRNG from locking to all-zeros.
@@ -1843,14 +1814,14 @@ export function GuideSection() {
               <BigCard color="bg-white border-teal-200">
                 <h3 className="text-base font-bold text-slate-800 mb-1">§7 — The PRNG Does Not Restart</h3>
                 <p className="text-slate-500 text-xs mb-5">
-                  After producing byte {prngSteps[0]?.byteVal}, the PRNG's internal state is the updated <em>a</em> and <em>b</em>. Those become the starting state for the <em>next</em> call — seeds {h8(seedA)} / {h8(seedB)} are never revisited.
+                  After producing byte {prngSteps[0]?.byteVal}, the PRNG's internal state is the updated <em>a</em> and <em>b</em>. Those become the starting state for the <em>next</em> call — the original combined seed is not revisited.
                 </p>
                 <div className="flex flex-col items-center gap-0 text-sm font-mono">
                   <div className="bg-green-100 border-2 border-green-300 rounded-xl px-5 py-2 font-bold text-green-800 text-center">
-                    Seed A: {h8(seedA)}<br/>Seed B: {h8(seedB)}
+                    Combined seed: {h8(combinedSeed)}<br/>Column IV: {h8(colIV)}
                   </div>
                   <div className="text-slate-400 text-xl py-1 select-none">↓</div>
-                  <div className="bg-indigo-50 border border-indigo-200 rounded-lg px-4 py-1.5 text-xs text-indigo-700 font-semibold">makeKeystream2(seedA, seedB) → a={h8(aInit)}, b={h8(bInit)}</div>
+                  <div className="bg-indigo-50 border border-indigo-200 rounded-lg px-4 py-1.5 text-xs text-indigo-700 font-semibold">makeKeystream(combinedSeed) → a={h8(aInit)}, b={h8(bInit)}</div>
                   {prngSteps.map((s, i) => (
                     <div key={i} className="flex flex-col items-center gap-0">
                       <div className="text-slate-400 text-xl py-0.5 select-none">↓</div>
@@ -1951,33 +1922,26 @@ export function GuideSection() {
               <p className="text-xs text-slate-400 mt-3">✦ If you change the column name above (Step 1 inputs), all 4 IVs change — and so does the final encrypted value.</p>
             </BigCard>
 
-            {/* Substep B: Keystream (v2) */}
+            {/* Substep B: Keystream */}
             <BigCard color="bg-white border-green-200">
-              <h3 className="text-lg font-bold text-slate-800 mb-2">🟢 Sub-step B: Generating the Keystream (v2 — two-seed PRNG)</h3>
+              <h3 className="text-lg font-bold text-slate-800 mb-2">🟢 Sub-step B: Generating the Keystream</h3>
               <p className="text-slate-500 text-sm leading-relaxed mb-4">
-                The per-value nonce and export salt are combined with the round key to produce <strong>two independent 32-bit seeds</strong>. These seeds initialise the <strong>xorshift128+</strong> PRNG as independent state variables, producing a stream of random bytes (0–255) — five <em>raw</em> keystream bytes per character, which are then XOR-mixed with a CBC diffusion value before use (Sub-step C below).
+                The round key and Column IV are combined into one reproducible PRNG seed. The <strong>xorshift128+</strong> generator produces a stream of bytes (0–255) — five keystream bytes per character, used directly by the five reversible operations.
               </p>
               <div className="grid grid-cols-2 gap-4 mb-4">
                 <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
-                  <div className="text-xs font-semibold text-slate-500 uppercase mb-2">Two-seed derivation — Round {encRoundIdx+1}</div>
+                  <div className="text-xs font-semibold text-slate-500 uppercase mb-2">Seed derivation — Round {encRoundIdx+1}</div>
                   <div className="font-mono text-xs text-slate-700 leading-relaxed space-y-1">
-                    <div>valueNonce = hashValueNonce(colIV, value)</div>
-                    <div>seedA = key[0..7] ⊕ valueNonce ⊕ salt[0..7] ⊕ salt[8..15]</div>
+                    <div>combinedSeed = key[0..7] ⊕ Column IV</div>
                     <div className="pl-4">
-                      = <span className="text-blue-600">{trace.keys[encRoundIdx].slice(0,8)}</span> ⊕ <span className="text-teal-600">0x{trace.valueNonces[encRoundIdx].toString(16).toUpperCase().padStart(8,"0")}</span> ⊕ …<br/>
-                      = <span className="text-green-700">0x{((() => {
-                        let sA = (parseInt(trace.keys[encRoundIdx].slice(0,8),16) ^ trace.valueNonces[encRoundIdx]) >>> 0;
-                        [0,8].forEach(i => { sA = (sA ^ parseInt(GUIDE_DEMO_EXPORT_SALT.slice(i, i+8), 16)) >>> 0; });
-                        return sA;
-                      })()).toString(16).toUpperCase().padStart(8,"0")}</span>
+                      = <span className="text-blue-600">{trace.keys[encRoundIdx].slice(0,8)}</span> ⊕ <span className="text-teal-600">0x{trace.colIVs[encRoundIdx].toString(16).toUpperCase().padStart(8,"0")}</span><br/>
+                      = <span className="text-green-700">0x{combinedSeed.toString(16).toUpperCase().padStart(8,"0")}</span>
                     </div>
-                    <div>seedB = key[8..15] ⊕ salt[16..23] ⊕ salt[24..31]</div>
+                    <div>PRNG state = xorshift128+(combinedSeed)</div>
                     <div className="pl-4">
-                      = <span className="text-rose-700">0x{((() => {
-                        let sB = parseInt(trace.keys[encRoundIdx].slice(8,16) || "0", 16);
-                        [16,24].forEach(i => { sB = (sB ^ parseInt(GUIDE_DEMO_EXPORT_SALT.slice(i, i+8), 16)) >>> 0; });
-                        return sB;
-                      })()).toString(16).toUpperCase().padStart(8,"0")}</span>
+                      a = <span className="text-indigo-700">0x{aInit.toString(16).toUpperCase().padStart(8,"0")}</span>
+                      {" · "}
+                      b = <span className="text-rose-700">0x{bInit.toString(16).toUpperCase().padStart(8,"0")}</span>
                     </div>
                   </div>
                 </div>
@@ -1988,7 +1952,7 @@ export function GuideSection() {
                       <span key={i} className="font-mono text-xs bg-amber-100 text-amber-800 px-2 py-0.5 rounded-lg font-bold border border-amber-200">{b}</span>
                     ))}
                   </div>
-                  <p className="text-xs text-slate-400 mt-2"><strong>5 consecutive raw bytes consumed per character</strong> — each is XOR-mixed with a rotl8-spread CBC value before the 5 sub-operations run.</p>
+                   <p className="text-xs text-slate-400 mt-2"><strong>5 consecutive bytes consumed per character</strong> — one byte drives each reversible sub-operation directly.</p>
                 </div>
               </div>
               <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 text-xs text-blue-800">
@@ -2005,41 +1969,38 @@ export function GuideSection() {
               </div>
             </BigCard>
 
-            {/* Substep C: CBC Diffusion */}
+            {/* Substep C: compact-format note */}
             <BigCard color="bg-white border-indigo-200">
-              <h3 className="text-lg font-bold text-slate-800 mb-2">🔗 Sub-step C: CBC Diffusion — Chaining Characters Together</h3>
+              <h3 className="text-lg font-bold text-slate-800 mb-2">🔗 Sub-step C: Why There Is No Hidden File State</h3>
               <p className="text-slate-500 text-sm leading-relaxed mb-4">
-                Before each character's 5 raw keystream bytes are used in sub-operations, they are <strong>XOR-mixed with a rotation of a running chaining value (cbc)</strong>. This means every character's effective keystream depends on all the ciphertext characters before it, and on a secret key-derived byte (<code className="bg-slate-100 px-1 rounded text-xs">rawKs4</code>) that cannot be reconstructed without the round key.
+                The compact format does not store a salt, nonce, HMAC, or hidden key beside the data. Every byte needed for decryption is regenerated from the selected seeds, the derived master/round keys, and the column name.
               </p>
               <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-4 mb-4">
-                <div className="text-xs font-bold text-indigo-700 uppercase mb-3">Per-character CBC step (runs before the 5 sub-operations)</div>
+                <div className="text-xs font-bold text-indigo-700 uppercase mb-3">Per-character seed-only step</div>
                 <div className="font-mono text-xs space-y-2 text-slate-800">
                   <div className="bg-white border border-indigo-100 rounded-lg px-3 py-2">
-                    <span className="text-indigo-600 font-bold">rawKs4</span> = raw PRNG byte 4 (the secret byte, key-derived)
+                    <span className="text-indigo-600 font-bold">keyChain</span> = four round keys derived from the seeds
                   </div>
                   <div className="bg-white border border-indigo-100 rounded-lg px-3 py-2">
-                    <span className="text-indigo-600 font-bold">effectiveKs[j]</span> = rawKs[j] ⊕ rotl8(cbc, j) &nbsp;&nbsp; for j = 0 … 4
+                    <span className="text-indigo-600 font-bold">keystream</span> = xorshift128+(roundKey[0..7] ⊕ Column IV)
                   </div>
                   <div className="bg-white border border-indigo-100 rounded-lg px-3 py-2">
-                    Apply 5 sub-ops with effectiveKs[0] … effectiveKs[4]
-                  </div>
-                  <div className="bg-indigo-100 border border-indigo-200 rounded-lg px-3 py-2 font-bold text-indigo-800">
-                    cbc ← ((cbc &lt;&lt; 3) ⊕ charCode(encChar) ⊕ rawKs4) &amp; 0xFF
+                    Apply 5 sub-ops with keystream[0] … keystream[4]
                   </div>
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-4 mb-4">
                 <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 text-xs text-slate-700">
-                  <div className="font-bold text-slate-800 mb-2">🔄 rotl8(cbc, j)</div>
-                  <p>Rotates the 8-bit cbc value left by <em>j</em> positions so each of the 5 keystream bytes is shifted by a different amount: byte 0 gets cbc unchanged, byte 1 gets cbc rotated 1 bit, byte 2 gets it rotated 2 bits, etc. All 5 bytes are affected but in different ways, giving full diffusion across the character's sub-operations.</p>
+                  <div className="font-bold text-slate-800 mb-2">🔑 Same inputs, same bytes</div>
+                  <p>Because the seed values and column name are the inputs, the importer can regenerate exactly the same keystream without needing anything embedded in the CSV.</p>
                 </div>
                 <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 text-xs text-slate-700">
-                  <div className="font-bold text-slate-800 mb-2">🔐 rawKs4 — the secret component</div>
-                  <p>The 5th raw keystream byte is mixed into the cbc update <em>in addition to</em> the ciphertext character code. Without the round key you cannot derive rawKs4 — so even if an attacker knows every ciphertext character, they cannot reconstruct the cbc sequence and therefore cannot compute the effective keystream bytes for any later character.</p>
+                  <div className="font-bold text-slate-800 mb-2">📄 Plain CSV output</div>
+                  <p>The output remains a normal CSV with the field names and encrypted values only. There are no salt, HMAC, or algorithm comment rows for spreadsheet users to manage.</p>
                 </div>
               </div>
               <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-xs text-amber-900">
-                <strong>For decryption:</strong> the CBC update uses the <em>ciphertext</em> char code (the input character), not the recovered plaintext — so both encrypt and decrypt compute the same cbc → cbc sequence and therefore the same effective keystream bytes. Full reversibility is maintained.
+                <strong>For decryption:</strong> enter the same seed/key settings and select the same columns. The application regenerates the four round streams and reverses the five operations in each round.
               </div>
             </BigCard>
 
@@ -2051,7 +2012,7 @@ export function GuideSection() {
               {/* Plain-English summary */}
               <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-6">
                 <p className="text-sm text-amber-900 leading-relaxed">
-                  Every character runs through <strong>5 mini-operations</strong> per round. For each mini-op, one <em>effective</em> keystream byte (<code className="bg-amber-100 px-1 rounded text-xs">k</code>, already CBC-mixed by Sub-step C) decides <em>what kind</em> of math to do (<code className="bg-amber-100 px-1 rounded text-xs">k mod 4</code>) and <em>how much</em> to shift (<code className="bg-amber-100 px-1 rounded text-xs">k ÷ 4</code>). The character's position in its alphabet (<code className="bg-amber-100 px-1 rounded text-xs">v</code>) is updated after each step. All four operations are <strong>perfectly reversible</strong>, so decryption always gets the original back exactly.
+                  Every character runs through <strong>5 mini-operations</strong> per round. For each mini-op, one <em>keystream byte</em> (<code className="bg-amber-100 px-1 rounded text-xs">k</code>) decides <em>what kind</em> of math to do (<code className="bg-amber-100 px-1 rounded text-xs">k mod 4</code>) and <em>how much</em> to shift (<code className="bg-amber-100 px-1 rounded text-xs">k ÷ 4</code>). The character's position in its alphabet (<code className="bg-amber-100 px-1 rounded text-xs">v</code>) is updated after each step. All four operations are <strong>perfectly reversible</strong>, so decryption always gets the original back exactly.
                 </p>
               </div>
 
@@ -3063,7 +3024,7 @@ export function GuideSection() {
                 {decShifts.length > 14 && <div className="flex items-center text-slate-400 text-sm italic">+{decShifts.length-14} more…</div>}
               </div>
               <div className="bg-blue-50 rounded-xl p-4 text-sm text-blue-800 mt-3">
-                <strong>Same effective keystream bytes, reversed operations.</strong> For each character, the same raw PRNG bytes are re-derived (same seeds → same bytes), the same CBC state is reproduced (because the cbc update uses the <em>ciphertext</em> char code — which decryption reads as input), so the same effective keystream bytes emerge. Decryption then applies the 5 sub-ops in <em>reverse order</em>, using each operation's mathematical inverse: add↔subtract, multiply↔divide by modular inverse, flip↔flip (its own inverse).
+                <strong>Same keystream bytes, reversed operations.</strong> For each character, the same PRNG bytes are re-derived from the seeds and column IV. Decryption then applies the 5 sub-ops in <em>reverse order</em>, using each operation's mathematical inverse: add↔subtract, multiply↔divide by modular inverse, flip↔flip (its own inverse).
               </div>
             </div>
 
@@ -3313,11 +3274,11 @@ export function GuideSection() {
                     name: "Order-Sensitive",
                     icon: "🔢",
                     badge: "bg-violet-100 text-violet-700",
-                    body: "Swapping any two seeds produces a completely different encrypted value — even though the same set of 4 numbers was used. This means 4! = 24 distinct orderings of the same seeds. Additionally, each character's effective keystream bytes are XOR-mixed with a CBC diffusion value that depends on all preceding ciphertext characters and secret key material (rawKs4), so character order within the value is also protected.",
+                    body: "Swapping any two seeds produces a completely different encrypted value — even though the same set of 4 numbers was used. This means 4! = 24 distinct orderings of the same seeds. Each round also has its own derived key and column IV, so the four reversible passes remain distinct.",
                     check: true
                   },
                   {
-                    name: "CBC diffusion — secret chaining",
+                    name: "Seed-derived keystream",
                     icon: "🔗",
                     badge: "bg-indigo-100 text-indigo-700",
                     body: "Each character's five effective keystream bytes are formed by XOR-ing the raw PRNG bytes with rotl8(cbc, j) for j = 0…4, where cbc is updated after each character: cbc ← ((cbc << 3) ⊕ charCode(encChar) ⊕ rawKs4) & 0xFF. The rawKs4 term is a secret key-derived byte that cannot be reconstructed from the ciphertext alone. This means: (1) every character's keystream depends on all preceding ciphertext characters, (2) reconstructing the keystream without the key is infeasible even with chosen-plaintext access.",
@@ -3327,21 +3288,21 @@ export function GuideSection() {
                     name: "Non-malleable (within rounds)",
                     icon: "🧱",
                     badge: "bg-rose-100 text-rose-700",
-                    body: "Because we use 4 independent keystreams (one per key/IV pair) and each keystream is further chained through CBC with a secret component, knowing one character's shift tells you nothing about another character's shift. Flipping a ciphertext character breaks all subsequent character shifts in that round.",
+                    body: "Each round regenerates its keystream from the selected seeds, the derived round key, and the column name. The CSV carries no auxiliary key material; matching settings are required to reverse it.",
                     check: true
                   },
                   {
-                    name: "Per-Export Freshness",
-                    icon: "🎲",
+                    name: "Compact CSV output",
+                    icon: "📄",
                     badge: "bg-teal-100 text-teal-700",
-                    body: "A CSPRNG-generated 128-bit export salt is folded into every keystream derivation before each export run (Correction B). Two exports of the same CSV with the same seeds produce completely different ciphertext — collision probability across exports is ≈ 1/2³² per cell, even for identical values.",
+                    body: "New exports start directly with the CSV header and contain encrypted values only. There are no salt, HMAC, format metadata, or other auxiliary key-material rows.",
                     check: true
                   },
                   {
-                    name: "Tamper-Evident (HMAC-SHA256)",
-                    icon: "🔐",
+                    name: "Seed-based decryption",
+                    icon: "🔑",
                     badge: "bg-orange-100 text-orange-700",
-                    body: "The anonymized CSV export is sealed with an HMAC-SHA256 tag computed over the full file contents. Any post-export modification (even a single byte change) invalidates the tag on import. The key for HMAC is derived from the same seed material, so only the holder of the seeds can verify integrity.",
+                    body: "Decryption does not inspect a salt or HMAC. It uses the same four seed values, master-key derivation, round keys, Column IV, and optional alphanumeric setting used during export.",
                     check: true
                   },
                   {
