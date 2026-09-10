@@ -226,7 +226,6 @@ export default function FWFConverter() {
   const [commonSelectedColumns, setCommonSelectedColumns] = useState<string[] | null>(null);
   const [collapsedAnonFiles, setCollapsedAnonFiles] = useState<Set<string>>(new Set());
   const [batchEncryptRunning, setBatchEncryptRunning] = useState(false);
-  const [batchEncryptIndex, setBatchEncryptIndex] = useState(0);
 
   // Global key settings (shared across all file encryptions)
   const [anonMode, setAnonMode] = useState<AnonMode>("encrypt");
@@ -808,9 +807,14 @@ export default function FWFConverter() {
           df.text!, lo.result.fields, new Set(df.encColsList), buildOpts(),
           pct => patchFile(setDataFiles, dfId, { encProgress: pct })
         );
+        const outputName = `${df.outputBaseName}_anonymized.csv`;
+        const outputSaved = Boolean(preparedStreamTarget);
+        if (outputSaved) {
+          await saveOutputStream(blob.stream(), outputName, preparedStreamTarget);
+        }
         patchFile(setDataFiles, dfId, {
-          encResultBlob: blob, encResultKey: keyHex, encPreview: [], encOutputSaved: false,
-          encOutputName: "", step: "anon-done", encRunning: false,
+          encResultBlob: outputSaved ? null : blob, encResultKey: keyHex, encPreview: [], encOutputSaved: outputSaved,
+          encOutputName: outputSaved ? outputName : "", step: "anon-done", encRunning: false,
         });
       }
     } catch (e) {
@@ -832,7 +836,7 @@ export default function FWFConverter() {
 
     let streamTarget: DirectoryHandle | string | null =
       outputDirectory ?? (outputDirectoryName || null);
-    if (filesToEncrypt.some(df => df.streaming) && !streamTarget) {
+    if (!streamTarget) {
       if (window.desktopAPI) {
         const selectedPath = await window.desktopAPI.chooseOutputFolder();
         if (selectedPath) {
@@ -851,15 +855,10 @@ export default function FWFConverter() {
     }
 
     setBatchEncryptRunning(true);
-    setBatchEncryptIndex(0);
     try {
-      for (let index = 0; index < filesToEncrypt.length; index++) {
-        setBatchEncryptIndex(index + 1);
-        await handleEncrypt(filesToEncrypt[index].id, streamTarget);
-      }
+      await Promise.all(filesToEncrypt.map(df => handleEncrypt(df.id, streamTarget)));
     } finally {
       setBatchEncryptRunning(false);
-      setBatchEncryptIndex(0);
     }
   }, [dataFiles, batchEncryptRunning, outputDirectory, outputDirectoryName, chooseOutputDirectory, handleEncrypt]);
 
