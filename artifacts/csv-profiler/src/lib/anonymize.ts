@@ -1485,6 +1485,7 @@ export async function encryptFWFFileToStream(
 export interface DecryptStreamResult {
   stream: ReadableStream<Uint8Array>;
   headers: string[];
+  previewRows: string[][];
 }
 
 /**
@@ -1522,6 +1523,7 @@ export function decryptCSVFileToStream(
   }
 
   const headers: string[] = [];
+  const previewRows: string[][] = [];
   const generator = (async function* () {
     let output = "";
     let headerRead = false;
@@ -1562,6 +1564,7 @@ export function decryptCSVFileToStream(
       if (line.trimStart().startsWith("#")) continue;
       const cells = splitCSVLine(line);
       const outCells: string[] = [];
+      const previewCells: string[] = [];
 
       for (let ci = 0; ci < headers.length; ci++) {
         const col = headers[ci];
@@ -1603,9 +1606,11 @@ export function decryptCSVFileToStream(
           }
         }
 
+        previewCells.push(val);
         outCells.push(csvEscape(val));
       }
 
+      if (previewRows.length < 500) previewRows.push(previewCells);
       output += outCells.join(",") + "\n";
       if (output.length >= 256 * 1024) {
         const chunk = output;
@@ -1619,7 +1624,7 @@ export function decryptCSVFileToStream(
     onProgress(100);
   })();
 
-  return { stream: readableStreamFromTextGenerator(generator), headers };
+  return { stream: readableStreamFromTextGenerator(generator), headers, previewRows };
 }
 
 // ── Streaming decrypt: CSV text → decrypted CSV Blob ─────────────────────────
