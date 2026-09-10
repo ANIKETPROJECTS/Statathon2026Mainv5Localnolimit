@@ -241,6 +241,8 @@ export default function FWFConverter() {
   const [decryptRunning, setDecryptRunning] = useState(false);
   const [decryptProgress, setDecryptProgress] = useState(0);
   const [decryptBlob, setDecryptBlob] = useState<Blob | null>(null);
+  const [decryptEncryptedPreview, setDecryptEncryptedPreview] = useState<string[][]>([]);
+  const [decryptDecryptedPreview, setDecryptDecryptedPreview] = useState<string[][]>([]);
   const [decryptOutputSaved, setDecryptOutputSaved] = useState(false);
   const [decryptOutputName, setDecryptOutputName] = useState("");
   const [decryptError, setDecryptError] = useState("");
@@ -831,6 +833,7 @@ export default function FWFConverter() {
   const handleDecryptFile = useCallback(async (file: File) => {
     setDecryptError(""); setDecryptBlob(null); setDecryptOutputSaved(false);
     setDecryptOutputName(""); setDecryptFile(file); setDecryptFileName(file.name);
+    setDecryptEncryptedPreview([]); setDecryptDecryptedPreview([]);
     setDecryptCsvText(null); setDecryptHeaders([]);
     const text = file.size >= STREAMING_FILE_THRESHOLD
       ? await file.slice(0, 64 * 1024).text()
@@ -838,13 +841,15 @@ export default function FWFConverter() {
     const headers = readCSVHeaders(text);
     if (!headers.length) { setDecryptError("Could not read CSV headers."); return; }
     if (file.size < STREAMING_FILE_THRESHOLD) setDecryptCsvText(text);
+    setDecryptEncryptedPreview(parseExportCSV(text).rows.slice(0, 500));
     setDecryptHeaders(headers); setDecryptCols(new Set(headers));
   }, []);
 
   const handleDecrypt = useCallback(async () => {
     if (!decryptFile) { setDecryptError("Upload an encrypted CSV first."); return; }
     if (decryptCols.size === 0) { setDecryptError("Select at least one column to decrypt."); return; }
-    setDecryptRunning(true); setDecryptProgress(0); setDecryptError(""); setDecryptBlob(null);
+    setDecryptRunning(true); setDecryptProgress(0); setDecryptError("");
+    setDecryptBlob(null); setDecryptDecryptedPreview([]);
     try {
       if (decryptFile.size >= STREAMING_FILE_THRESHOLD) {
         let streamTarget: DirectoryHandle | string | null =
@@ -862,34 +867,34 @@ export default function FWFConverter() {
         }
         if (!streamTarget) throw new Error("Choose an output folder before decrypting a large file.");
 
-        const { stream } = decryptCSVFileToStream(
+        const { stream, previewRows } = decryptCSVFileToStream(
           decryptFile, decryptCols, buildOpts(), setDecryptProgress,
         );
         const outputName = `${decryptFileName.replace(/\.csv$/i, "")}_decrypted.csv`;
         await saveOutputStream(stream, outputName, streamTarget);
+        setDecryptDecryptedPreview(previewRows.slice(0, 500));
         setDecryptOutputSaved(true);
         setDecryptOutputName(outputName);
       } else {
         const blob = await decryptCSVToBlob(decryptCsvText!, decryptCols, buildOpts(), setDecryptProgress);
         setDecryptBlob(blob);
+        setDecryptDecryptedPreview(parseExportCSV(await blob.text()).rows.slice(0, 500));
       }
     } catch (e) { setDecryptError(`Decryption failed: ${(e as Error).message}`); }
     finally { setDecryptRunning(false); }
   }, [decryptFile, decryptCsvText, decryptCols, outputDirectory, outputDirectoryName, chooseOutputDirectory, saveOutputStream, anonKeyMode, anonSeeds, anonPassphrase, anonPbkdf2Iter, anonDeterministic, anonAlphanumeric, anonKeyHexInput]);
 
   const handleOpenDecryptCompare = useCallback(async () => {
-    if (!decryptCsvText || !decryptBlob) return;
+    if (!decryptFile || decryptEncryptedPreview.length === 0 || decryptDecryptedPreview.length === 0) return;
     setDecryptCompareLoading(true); setShowDecryptCompare(true);
     try {
-      const MAX = 500;
-      const encrypted = parseExportCSV(decryptCsvText);
-      const headers = encrypted.headers;
-      const original = encrypted.rows.slice(0, MAX);
-      const decText = await decryptBlob.text();
-      const anonymized = parseExportCSV(decText).rows.slice(0, MAX);
-      setDecryptCompareData({ headers, original, anonymized });
+      setDecryptCompareData({
+        headers: decryptHeaders,
+        original: decryptEncryptedPreview,
+        anonymized: decryptDecryptedPreview,
+      });
     } finally { setDecryptCompareLoading(false); }
-  }, [decryptCsvText, decryptBlob]);
+  }, [decryptFile, decryptHeaders, decryptEncryptedPreview, decryptDecryptedPreview]);
 
   // ── Computed ─────────────────────────────────────────────────────────────
 
@@ -1206,6 +1211,7 @@ export default function FWFConverter() {
                          <button onClick={() => {
                            setDecryptFileName(""); setDecryptFile(null); setDecryptCsvText(null);
                            setDecryptHeaders([]); setDecryptCols(new Set()); setDecryptBlob(null);
+                           setDecryptEncryptedPreview([]); setDecryptDecryptedPreview([]);
                            setDecryptOutputSaved(false); setDecryptOutputName("");
                          }}
                           className="ml-auto text-gray-400 hover:text-black"><X className="w-4 h-4" /></button>
@@ -1233,7 +1239,7 @@ export default function FWFConverter() {
                           className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-emerald-600 text-white font-semibold hover:bg-emerald-700 transition-colors">
                           <Download className="w-4 h-4" />Download decrypted CSV
                          </button>}
-                         {decryptBlob && <button onClick={handleOpenDecryptCompare}
+                         {(decryptBlob || decryptOutputSaved) && <button onClick={handleOpenDecryptCompare}
                           className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 border-emerald-500 text-emerald-700 text-sm font-semibold hover:bg-emerald-50 transition-colors">
                           <Columns2 className="w-4 h-4" />View side by side
                          </button>}
@@ -1643,7 +1649,9 @@ function SideBySideModal({ loading, data, totalRows, leftLabel = "Original", rig
         <div className="flex items-center gap-3 flex-1 min-w-0">
           <Columns2 className="w-5 h-5 text-emerald-600 flex-shrink-0" />
           <div>
-            <h2 className="text-lg font-semibold text-black leading-tight">Original vs Anonymized</h2>
+           <h2 className="text-lg font-semibold text-black leading-tight">
+             {leftLabel === "Encrypted" && rightLabel === "Decrypted" ? "Encrypted vs Decrypted" : "Original vs Anonymized"}
+           </h2>
             <p className="text-sm text-gray-500">
               {data ? `Showing ${data.original.length.toLocaleString()} of ${totalRows.toLocaleString()} rows · ${data.headers.length} columns` : "Loading…"}
               {totalRows > 500 && data && <span className="ml-1 text-amber-600">(capped at 500 rows)</span>}
