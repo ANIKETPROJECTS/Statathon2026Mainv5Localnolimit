@@ -1530,6 +1530,7 @@ export function decryptCSVFileToStream(
     const ivCounters: Record<string, number> = {};
     const deterministicCache = new Map<string, string>();
     const deterministicCacheLimit = 500_000;
+    const fastDecryptCompatible: Record<string, boolean | undefined> = {};
     let lastProgress = -1;
 
     const emitProgress = (bytesRead: number) => {
@@ -1582,7 +1583,22 @@ export function decryptCSVFileToStream(
               if (options.alphanumericOutput) {
                 val = decryptAlphanumCell(colAlnumKs[col], val);
               }
-              val = decryptChain4Fast(colCiphers[col], val);
+              const fastValue = fastDecryptCompatible[col] === false
+                ? ""
+                : decryptChain4Fast(colCiphers[col], val);
+              if (fastDecryptCompatible[col] === undefined) {
+                // Keep the lookup-table path for speed, but verify it once per
+                // column against the original inverse implementation. This
+                // prevents a future optimization mismatch from corrupting a
+                // large streamed output while keeping the hot path fast.
+                const referenceValue = decryptChain4(colKs4[col], val);
+                fastDecryptCompatible[col] = fastValue === referenceValue;
+                val = fastDecryptCompatible[col] ? fastValue : referenceValue;
+              } else if (fastDecryptCompatible[col]) {
+                val = fastValue;
+              } else {
+                val = decryptChain4(colKs4[col], val);
+              }
               if (deterministicCache.size >= deterministicCacheLimit) {
                 const oldest = deterministicCache.keys().next().value;
                 if (oldest !== undefined) deterministicCache.delete(oldest);
