@@ -372,10 +372,85 @@ function fpeDecryptChar5(ch: string, ks5: number[], charIdx: number): { out: str
 }
 
 // Compact-format round: the five raw keystream bytes drive the five
-// reversible operations directly. There is no CBC state in the seed-only
-// export format.
+// reversible operations directly, followed by whole-value diffusion. The
+// diffusion step couples positions without changing their character classes.
+interface DiffusionSymbol {
+  value: number;
+  size: number;
+  encode: (value: number) => string;
+}
+
+function toDiffusionSymbols(value: string): DiffusionSymbol[] {
+  return [...value].map((ch, index) => {
+    const code = ch.charCodeAt(0);
+    if (index === 0 && code >= 48 && code <= 57) {
+      if (code === 48) return { value: 0, size: 1, encode: () => "0" };
+      return { value: code - 49, size: 9, encode: v => String.fromCharCode(v + 49) };
+    }
+    if (code >= 48 && code <= 57)
+      return { value: code - 48, size: 10, encode: v => String.fromCharCode(v + 48) };
+    if (code >= 65 && code <= 90)
+      return { value: code - 65, size: 26, encode: v => String.fromCharCode(v + 65) };
+    if (code >= 97 && code <= 122)
+      return { value: code - 97, size: 26, encode: v => String.fromCharCode(v + 97) };
+    const symbolIndex = SYMBOL_CHARS.indexOf(ch);
+    if (symbolIndex !== -1)
+      return { value: symbolIndex, size: SYMBOL_CHARS.length, encode: v => SYMBOL_CHARS[v] };
+    return { value: 0, size: 1, encode: () => ch };
+  });
+}
+
+function diffusionDelta(ks: Uint8Array, position: number, neighbour: number, sweep: number, modulus: number): number {
+  if (modulus <= 1) return 0;
+  const offset = (position * 17 + sweep * 131 + neighbour * 29) % ks.length;
+  let mixed = (
+    ks[offset]
+    | (ks[(offset + 1) % ks.length] << 8)
+    | (ks[(offset + 2) % ks.length] << 16)
+    | (ks[(offset + 3) % ks.length] << 24)
+  ) >>> 0;
+  mixed ^= Math.imul((neighbour + 1) ^ (position + 0x51), 0x9e3779b1);
+  mixed ^= mixed >>> 16;
+  mixed = Math.imul(mixed, 0x85ebca6b) >>> 0;
+  mixed ^= mixed >>> 13;
+  return (mixed >>> 0) % modulus;
+}
+
+function diffuseCellForward(ks: Uint8Array, value: string): string {
+  const symbols = toDiffusionSymbols(value);
+  for (let i = 1; i < symbols.length; i++) {
+    symbols[i].value = (
+      symbols[i].value + diffusionDelta(ks, i, symbols[i - 1].value, 0, symbols[i].size)
+    ) % symbols[i].size;
+  }
+  for (let i = symbols.length - 2; i >= 0; i--) {
+    symbols[i].value = (
+      symbols[i].value + diffusionDelta(ks, i, symbols[i + 1].value, 1, symbols[i].size)
+    ) % symbols[i].size;
+  }
+  return symbols.map(symbol => symbol.encode(symbol.value)).join("");
+}
+
+function diffuseCellInverse(ks: Uint8Array, value: string): string {
+  const symbols = toDiffusionSymbols(value);
+  for (let i = 0; i < symbols.length - 1; i++) {
+    symbols[i].value = (
+      symbols[i].value - diffusionDelta(ks, i, symbols[i + 1].value, 1, symbols[i].size)
+      + symbols[i].size
+    ) % symbols[i].size;
+  }
+  for (let i = symbols.length - 1; i >= 1; i--) {
+    symbols[i].value = (
+      symbols[i].value - diffusionDelta(ks, i, symbols[i - 1].value, 0, symbols[i].size)
+      + symbols[i].size
+    ) % symbols[i].size;
+  }
+  return symbols.map(symbol => symbol.encode(symbol.value)).join("");
+}
+
 function runRound(value: string, ks: Uint8Array, mode: "enc" | "dec"): { output: string; charShifts: CharShift[] } {
-  const chars = [...value];
+  const roundInput = mode === "dec" ? diffuseCellInverse(ks, value) : value;
+  const chars = [...roundInput];
   let ki = 0;
   const charShifts: CharShift[] = [];
   let output = "";
@@ -395,13 +470,13 @@ function runRound(value: string, ks: Uint8Array, mode: "enc" | "dec"): { output:
       output += out;
     }
   }
-  return { output, charShifts };
+  return { output: mode === "enc" ? diffuseCellForward(ks, output) : output, charShifts };
 }
 
 interface CharShift {
   from: string; to: string; k: number; changed: boolean;
   microOps: MicroOp[]; isLeadingZeroPassthrough?: boolean;
-  // Kept in the trace shape for the existing UI; compact mode has no CBC.
+  // Kept in the trace shape for the existing UI; compact diffusion is not CBC.
   cbcBefore: number;
   cbcAfter: number;
   rawKs4: number;
