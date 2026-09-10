@@ -161,6 +161,56 @@ assert(
   "numeric large-file decrypt regression failed",
 );
 
+// Whole-value diffusion regression: changing only the final plaintext digit
+// must alter most of the ciphertext, while remaining exactly reversible.
+const diffusionField: FieldSpec[] = [
+  { varName: "fsu_serial_no", start: 1, end: 5 },
+];
+const diffusionRaw = "65556\n65553\n";
+const diffusionEncrypted = await encryptFWFToBlob(
+  diffusionRaw,
+  diffusionField,
+  new Set(["fsu_serial_no"]),
+  base,
+  () => {},
+);
+const diffusionText = await diffusionEncrypted.blob.text();
+const [diffusionA, diffusionB] = diffusionText.trimEnd().split("\n").slice(1);
+const changedPositions = [...diffusionA].filter((char, index) => char !== diffusionB[index]).length;
+assert(
+  changedPositions >= 3,
+  `whole-value diffusion was too weak: ${diffusionA} vs ${diffusionB}`,
+);
+const diffusionDecrypted = await decryptCSVToBlob(
+  diffusionText,
+  new Set(["fsu_serial_no"]),
+  base,
+  () => {},
+);
+assert(
+  await diffusionDecrypted.text() === "fsu_serial_no\n65556\n65553\n",
+  "whole-value diffusion round trip failed",
+);
+
+const legacyDiffusionOptions: AnonymizeOptions = { ...base, strongDiffusion: false };
+const legacyDiffusionEncrypted = await encryptFWFToBlob(
+  diffusionRaw,
+  diffusionField,
+  new Set(["fsu_serial_no"]),
+  legacyDiffusionOptions,
+  () => {},
+);
+const legacyDiffusionDecrypted = await decryptCSVToBlob(
+  await legacyDiffusionEncrypted.blob.text(),
+  new Set(["fsu_serial_no"]),
+  legacyDiffusionOptions,
+  () => {},
+);
+assert(
+  await legacyDiffusionDecrypted.text() === "fsu_serial_no\n65556\n65553\n",
+  "legacy compact compatibility round trip failed",
+);
+
 const selective = await roundTrip({ ...base, deterministic: false }, "subset");
 const selectiveLines = selective.decryptedText.trimEnd().split("\n");
 assert(selectiveLines[0] === "A,B,C", "selective output header changed");

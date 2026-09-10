@@ -307,6 +307,107 @@ function decryptFPECell(ksBytes: Uint8Array, value: string): string {
   }).join("");
 }
 
+// ── Whole-value reversible diffusion ──────────────────────────────────────────
+//
+// The original compact cipher transformed each character independently. That
+// meant nearby identifiers such as 65556 and 65553 produced ciphertexts that
+// also differed only at the last character. These two keyed triangular sweeps
+// couple every character to its neighbours while preserving each position's
+// character class and field width. The inverse performs the sweeps in the exact
+// reverse order, so no extra metadata is required for decryption.
+
+interface DiffusionSymbol {
+  value: number;
+  size: number;
+  encode: (value: number) => string;
+}
+
+function toDiffusionSymbols(value: string): DiffusionSymbol[] {
+  return [...value].map((ch, index) => {
+    const code = ch.charCodeAt(0);
+    if (index === 0 && code >= 48 && code <= 57) {
+      if (code === 48) return { value: 0, size: 1, encode: () => "0" };
+      return { value: code - 49, size: 9, encode: v => String.fromCharCode(v + 49) };
+    }
+    if (code >= 48 && code <= 57)
+      return { value: code - 48, size: 10, encode: v => String.fromCharCode(v + 48) };
+    if (code >= 65 && code <= 90)
+      return { value: code - 65, size: 26, encode: v => String.fromCharCode(v + 65) };
+    if (code >= 97 && code <= 122)
+      return { value: code - 97, size: 26, encode: v => String.fromCharCode(v + 97) };
+    const symbolIndex = SYMBOL_CHARS.indexOf(ch);
+    if (symbolIndex !== -1)
+      return { value: symbolIndex, size: SYMBOL_CHARS.length, encode: v => SYMBOL_CHARS[v] };
+    return { value: 0, size: 1, encode: () => ch };
+  });
+}
+
+function diffusionDelta(
+  ksBytes: Uint8Array,
+  position: number,
+  neighbour: number,
+  sweep: number,
+  modulus: number,
+): number {
+  if (modulus <= 1) return 0;
+  const offset = (position * 17 + sweep * 131 + neighbour * 29) % ksBytes.length;
+  let mixed = (
+    ksBytes[offset]
+    | (ksBytes[(offset + 1) % ksBytes.length] << 8)
+    | (ksBytes[(offset + 2) % ksBytes.length] << 16)
+    | (ksBytes[(offset + 3) % ksBytes.length] << 24)
+  ) >>> 0;
+  mixed ^= Math.imul((neighbour + 1) ^ (position + 0x51), 0x9e3779b1);
+  mixed ^= mixed >>> 16;
+  mixed = Math.imul(mixed, 0x85ebca6b) >>> 0;
+  mixed ^= mixed >>> 13;
+  return (mixed >>> 0) % modulus;
+}
+
+function diffuseCellForward(ksBytes: Uint8Array, value: string): string {
+  const symbols = toDiffusionSymbols(value);
+  if (symbols.length < 2) return value;
+
+  for (let i = 1; i < symbols.length; i++) {
+    const current = symbols[i];
+    current.value = (
+      current.value
+      + diffusionDelta(ksBytes, i, symbols[i - 1].value, 0, current.size)
+    ) % current.size;
+  }
+  for (let i = symbols.length - 2; i >= 0; i--) {
+    const current = symbols[i];
+    current.value = (
+      current.value
+      + diffusionDelta(ksBytes, i, symbols[i + 1].value, 1, current.size)
+    ) % current.size;
+  }
+  return symbols.map(symbol => symbol.encode(symbol.value)).join("");
+}
+
+function diffuseCellInverse(ksBytes: Uint8Array, value: string): string {
+  const symbols = toDiffusionSymbols(value);
+  if (symbols.length < 2) return value;
+
+  for (let i = 0; i < symbols.length - 1; i++) {
+    const current = symbols[i];
+    current.value = (
+      current.value
+      - diffusionDelta(ksBytes, i, symbols[i + 1].value, 1, current.size)
+      + current.size
+    ) % current.size;
+  }
+  for (let i = symbols.length - 1; i >= 1; i--) {
+    const current = symbols[i];
+    current.value = (
+      current.value
+      - diffusionDelta(ksBytes, i, symbols[i - 1].value, 0, current.size)
+      + current.size
+    ) % current.size;
+  }
+  return symbols.map(symbol => symbol.encode(symbol.value)).join("");
+}
+
 // ── §10-v2 — CBC-enhanced cell encryption (v3 corrections applied)
 //
 // CBC-style chaining between characters — corrected per adversarial review:
@@ -500,9 +601,12 @@ function decryptFPECellV2(ksBytes: Uint8Array, value: string): string {
 
 // ── 4-round chain helpers ─────────────────────────────────────────────────────
 
-function encryptChain4(ksArr: Uint8Array[], value: string): string {
+function encryptChain4(ksArr: Uint8Array[], value: string, strongDiffusion = true): string {
   let v = value;
-  for (const ks of ksArr) v = encryptFPECell(ks, v);
+  for (const ks of ksArr) {
+    v = encryptFPECell(ks, v);
+    if (strongDiffusion) v = diffuseCellForward(ks, v);
+  }
   return v;
 }
 
@@ -512,9 +616,12 @@ function encryptChain4V2(ksArr: Uint8Array[], value: string): string {
   return v;
 }
 
-function decryptChain4(ksArr: Uint8Array[], value: string): string {
+function decryptChain4(ksArr: Uint8Array[], value: string, strongDiffusion = true): string {
   let v = value;
-  for (let i = ksArr.length - 1; i >= 0; i--) v = decryptFPECell(ksArr[i], v);
+  for (let i = ksArr.length - 1; i >= 0; i--) {
+    if (strongDiffusion) v = diffuseCellInverse(ksArr[i], v);
+    v = decryptFPECell(ksArr[i], v);
+  }
   return v;
 }
 
@@ -618,10 +725,15 @@ function buildFastDeterministicCipher(ksArr: Uint8Array[]): FastDeterministicCip
   return { rounds: ksArr.map(ks => buildFastFpeLookup(ks)) };
 }
 
-function encryptChain4Fast(cipher: FastDeterministicCipher, value: string): string {
+function encryptChain4Fast(
+  cipher: FastDeterministicCipher,
+  value: string,
+  strongDiffusion = true,
+): string {
   let result = value;
   for (const lookup of cipher.rounds) {
     result = encryptFpeLookupRound(lookup, result);
+    if (strongDiffusion) result = diffuseCellForward(lookup.ksBytes, result);
   }
   return result;
 }
@@ -667,9 +779,14 @@ function buildFastDecryptCipher(ksArr: Uint8Array[]): FastDeterministicCipher {
   return { rounds: ksArr.map(ks => buildFastFpeLookup(ks, true)) };
 }
 
-function decryptChain4Fast(cipher: FastDeterministicCipher, value: string): string {
+function decryptChain4Fast(
+  cipher: FastDeterministicCipher,
+  value: string,
+  strongDiffusion = true,
+): string {
   let result = value;
   for (let i = cipher.rounds.length - 1; i >= 0; i--) {
+    if (strongDiffusion) result = diffuseCellInverse(cipher.rounds[i].ksBytes, result);
     result = decryptFpeLookupRound(cipher.rounds[i], result);
   }
   return result;
@@ -900,6 +1017,12 @@ export interface AnonymizeOptions {
   passphrase: string;
   pbkdf2Iterations: number;
   deterministic: boolean;
+  /**
+   * Applies reversible whole-value diffusion so a one-character plaintext
+   * change affects the complete ciphertext. Disable only for compact files
+   * created by versions that predate strong diffusion.
+   */
+  strongDiffusion?: boolean;
   keyHex?: string;
   /**
    * When true, a 5th FPE pass remaps every encrypted character into the 62-char
@@ -1280,7 +1403,7 @@ export async function encryptFWFToBlob(
               const ksArr = keyChain.map(kh =>
                 makeCellKsBytes(DET_KS_SIZE, kh, hashColIV(kh, f.varName))
               );
-              let encrypted = encryptChain4(ksArr, val);
+              let encrypted = encryptChain4(ksArr, val, options.strongDiffusion !== false);
               if (options.alphanumericOutput) {
                 encrypted = encryptAlphanumCell(colAlnumKs[f.varName], encrypted);
               }
@@ -1297,7 +1420,7 @@ export async function encryptFWFToBlob(
                 (ivCounter ^ columnSeed ^ (ri * 0x12345679)) >>> 0
               )
             );
-            val = encryptChain4(ksArr, val);
+            val = encryptChain4(ksArr, val, options.strongDiffusion !== false);
             if (options.alphanumericOutput) {
               val = encryptAlphanumCell(colAlnumKs[f.varName], val);
             }
@@ -1451,7 +1574,11 @@ export async function encryptFWFFileToStream(
               deterministicCache.set(cacheKey, cached);
               val = cached;
             } else {
-              val = encryptChain4Fast(deterministicCiphers[f.varName], val);
+              val = encryptChain4Fast(
+                deterministicCiphers[f.varName],
+                val,
+                options.strongDiffusion !== false,
+              );
               if (deterministicCache.size >= deterministicCacheLimit) {
                 const oldest = deterministicCache.keys().next().value;
                 if (oldest !== undefined) deterministicCache.delete(oldest);
@@ -1468,7 +1595,7 @@ export async function encryptFWFFileToStream(
                 (ivCounters[f.varName] ^ columnSeed ^ (ri * 0x12345679)) >>> 0,
               )
             );
-            val = encryptChain4(ksArr, val);
+            val = encryptChain4(ksArr, val, options.strongDiffusion !== false);
           }
 
           if (options.alphanumericOutput) {
@@ -1599,19 +1726,31 @@ export function decryptCSVFileToStream(
               }
               const fastValue = fastDecryptCompatible[col] === false
                 ? ""
-                : decryptChain4Fast(colCiphers[col], val);
+                : decryptChain4Fast(
+                    colCiphers[col],
+                    val,
+                    options.strongDiffusion !== false,
+                  );
               if (fastDecryptCompatible[col] === undefined) {
                 // Keep the lookup-table path for speed, but verify it once per
                 // column against the original inverse implementation. This
                 // prevents a future optimization mismatch from corrupting a
                 // large streamed output while keeping the hot path fast.
-                const referenceValue = decryptChain4(colKs4[col], val);
+                const referenceValue = decryptChain4(
+                  colKs4[col],
+                  val,
+                  options.strongDiffusion !== false,
+                );
                 fastDecryptCompatible[col] = fastValue === referenceValue;
                 val = fastDecryptCompatible[col] ? fastValue : referenceValue;
               } else if (fastDecryptCompatible[col]) {
                 val = fastValue;
               } else {
-                val = decryptChain4(colKs4[col], val);
+                val = decryptChain4(
+                  colKs4[col],
+                  val,
+                  options.strongDiffusion !== false,
+                );
               }
               if (deterministicCache.size >= deterministicCacheLimit) {
                 const oldest = deterministicCache.keys().next().value;
@@ -1632,7 +1771,7 @@ export function decryptCSVFileToStream(
             if (options.alphanumericOutput) {
               val = decryptAlphanumCell(colAlnumKs[col], val);
             }
-            val = decryptChain4(ksArr, val);
+            val = decryptChain4(ksArr, val, options.strongDiffusion !== false);
           }
         }
 
@@ -1854,7 +1993,11 @@ export async function decryptCSVToBlob(
               val = detCache.get(ck)!;
             } else {
               if (options.alphanumericOutput) val = decryptAlphanumCell(colAlnumKs[col], val);
-              const dec = decryptChain4(colKs4[col], val);
+              const dec = decryptChain4(
+                colKs4[col],
+                val,
+                options.strongDiffusion !== false,
+              );
               detCache.set(ck, dec);
               val = dec;
             }
@@ -1866,7 +2009,7 @@ export async function decryptCSVToBlob(
               makeCellKsBytes(ksSize(val.length), kh, (ivCounter ^ columnSeed ^ (ri * 0x12345679)) >>> 0)
             );
             if (options.alphanumericOutput) val = decryptAlphanumCell(colAlnumKs[col], val);
-            val = decryptChain4(ksArr, val);
+            val = decryptChain4(ksArr, val, options.strongDiffusion !== false);
           }
         }
         outCells.push(csvEscape(val));

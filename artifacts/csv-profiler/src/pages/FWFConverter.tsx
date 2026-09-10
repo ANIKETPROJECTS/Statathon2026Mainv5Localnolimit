@@ -229,6 +229,7 @@ export default function FWFConverter() {
   const [anonPassphrase, setAnonPassphrase] = useState("");
   const [anonPbkdf2Iter, setAnonPbkdf2Iter] = useState(100_000);
   const [anonDeterministic, setAnonDeterministic] = useState(true);
+  const [anonStrongDiffusion, setAnonStrongDiffusion] = useState(true);
   const { alphanumeric: anonAlphanumeric, setAlphanumeric: setAnonAlphanumeric } = useEncryptionSettings();
   const [anonKeyHexInput, setAnonKeyHexInput] = useState("");
 
@@ -265,6 +266,7 @@ export default function FWFConverter() {
     passphrase: anonPassphrase, pbkdf2Iterations: anonPbkdf2Iter,
     deterministic: anonDeterministic, keyHex: anonKeyHexInput,
     alphanumericOutput: anonAlphanumeric,
+    strongDiffusion: anonStrongDiffusion,
   });
 
   const chooseOutputDirectory = useCallback(async (): Promise<DirectoryHandle | null> => {
@@ -1085,6 +1087,7 @@ export default function FWFConverter() {
               passphrase={anonPassphrase} setPassphrase={setAnonPassphrase}
               pbkdf2Iter={anonPbkdf2Iter} setPbkdf2Iter={setAnonPbkdf2Iter}
               deterministic={anonDeterministic} setDeterministic={setAnonDeterministic}
+              strongDiffusion={anonStrongDiffusion} setStrongDiffusion={setAnonStrongDiffusion}
               alphanumeric={anonAlphanumeric} setAlphanumeric={setAnonAlphanumeric}
               keyHexInput={anonKeyHexInput} setKeyHexInput={setAnonKeyHexInput}
             />
@@ -1753,12 +1756,13 @@ function SideBySideModal({ loading, data, totalRows, leftLabel = "Original", rig
 
 // ── KeySettings ───────────────────────────────────────────────────────────────
 
-function KeySettings({ keyMode, setKeyMode, seeds, setSeeds, passphrase, setPassphrase, pbkdf2Iter, setPbkdf2Iter, deterministic, setDeterministic, alphanumeric, setAlphanumeric, keyHexInput, setKeyHexInput }: {
+function KeySettings({ keyMode, setKeyMode, seeds, setSeeds, passphrase, setPassphrase, pbkdf2Iter, setPbkdf2Iter, deterministic, setDeterministic, strongDiffusion, setStrongDiffusion, alphanumeric, setAlphanumeric, keyHexInput, setKeyHexInput }: {
   keyMode: "random" | "pbkdf2" | "hex"; setKeyMode: (m: "random" | "pbkdf2" | "hex") => void;
   seeds: number[]; setSeeds: (s: number[]) => void;
   passphrase: string; setPassphrase: (s: string) => void;
   pbkdf2Iter: number; setPbkdf2Iter: (n: number) => void;
   deterministic: boolean; setDeterministic: (b: boolean) => void;
+  strongDiffusion: boolean; setStrongDiffusion: (b: boolean) => void;
   alphanumeric: boolean; setAlphanumeric: (b: boolean) => void;
   keyHexInput: string; setKeyHexInput: (s: string) => void;
 }) {
@@ -1822,6 +1826,13 @@ function KeySettings({ keyMode, setKeyMode, seeds, setSeeds, passphrase, setPass
             <div>
               <p className="font-semibold">Deterministic mode</p>
               <p className="text-xs mt-1 opacity-70">{deterministic ? "Same value → same output." : "Each encrypted cell gets a distinct keystream; decrypt with the same file settings."}</p>
+            </div>
+          </label>
+          <label className={`flex items-start gap-3 px-4 py-3 rounded-xl border cursor-pointer text-sm transition-colors ${strongDiffusion ? "border-emerald-500 bg-emerald-50 text-black" : "border-amber-400 bg-amber-50 text-black"}`}>
+            <input type="checkbox" checked={strongDiffusion} onChange={e => setStrongDiffusion(e.target.checked)} className="accent-emerald-600 w-4 h-4 mt-0.5 flex-shrink-0" />
+            <div>
+              <p className="font-semibold">Strong whole-value diffusion</p>
+              <p className="text-xs mt-1 opacity-70">{strongDiffusion ? "A one-character change affects the complete anonymized value." : "Legacy compatibility only — use for files encrypted before strong diffusion."}</p>
             </div>
           </label>
           <label className={`flex items-start gap-3 px-4 py-3 rounded-xl border cursor-pointer text-sm transition-colors ${alphanumeric ? "border-violet-500 bg-violet-50 text-black" : "border-gray-200 hover:border-violet-300 text-gray-500"}`}>
