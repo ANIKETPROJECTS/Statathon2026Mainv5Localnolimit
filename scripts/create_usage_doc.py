@@ -1,5 +1,6 @@
 from pathlib import Path
 import re
+import sys
 
 from docx import Document
 from docx.enum.section import WD_SECTION
@@ -11,8 +12,8 @@ from docx.oxml.ns import qn
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = ROOT / "software_usage_steps.md"
-OUTPUT = ROOT / "AIRAVATA_DEA_Software_Usage_Steps.docx"
+SOURCE = ROOT / (sys.argv[1] if len(sys.argv) > 1 else "software_usage_steps.md")
+OUTPUT = ROOT / (sys.argv[2] if len(sys.argv) > 2 else "AIRAVATA_DEA_Software_Usage_Steps.docx")
 
 
 def set_cell_shading(cell, fill):
@@ -131,9 +132,13 @@ def create_document():
             index += 1
             continue
 
-        image_match = re.match(r"\[!\[([^\]]+)\]\(([^)]+)\)\]\([^)]+\)", line)
+        linked_image_match = re.match(r"\[!\[([^\]]+)\]\(([^)]+)\)\]\([^)]+\)", line)
+        plain_image_match = re.match(r"!\[([^\]]+)\]\(([^)]+)\)", line)
+        image_match = linked_image_match or plain_image_match
         if image_match:
-            add_image(document, image_match.group(2), image_match.group(1))
+            image_path = image_match.group(2)
+            alt_text = image_match.group(1)
+            add_image(document, image_path, alt_text)
             index += 1
             continue
 

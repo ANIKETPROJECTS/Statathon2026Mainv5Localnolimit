@@ -56,3 +56,17 @@ mtime_ms = 1789031987546
 storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:6dcc3020-db1f-4da6-a42a-2e6c0dc07e36/0c861b95-5ab8-4c95-ba88-96144c1bcc7a/52029c63-a47a-4545-8848-862b34bd7fb1"
 storage_version_token = "1789031998888541"
 content_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+[[outputs]]
+id = "h6D2rHxREcic_W5o7cRy9"
+uri = "file://AIRAVATA_DEA_Software_Usage_Steps_Current.docx"
+type = "word_document"
+title = "AIRAVATA DEA Software Usage Steps"
+description = "Updated step-by-step Word guide with the 16 supplied screenshots covering layout setup, multi-TXT processing, common-column selection, output-folder saving, concurrent anonymisation, progress tracking, file-section controls, and saved CSV verification."
+logical_id = "c8aaeb8f-fc9d-442f-9c38-41be0daddf9f"
+content_hash = "sha256:4ce3bfc5d9a511db43b773e41c8979f7e4d00209c6ac1465da1a58bebdea1f80"
+size = 3136827
+mtime_ms = 1789045217856
+storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:6dcc3020-db1f-4da6-a42a-2e6c0dc07e36/c8aaeb8f-fc9d-442f-9c38-41be0daddf9f/aa2bec5b-643e-4f88-afbf-5dba237c9c78"
+storage_version_token = "1789045228602949"
+content_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
