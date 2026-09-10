@@ -100,6 +100,49 @@ const streamedDecryptedText = new TextDecoder().decode(
 );
 assert(streamedDecryptedText === expected, "streaming decrypt round trip failed");
 
+// Regression coverage for the large-file path: a compact export created by
+// the in-memory encryptor must decrypt identically through the streaming
+// decryptor, including the numeric values that previously exposed the fast
+// inverse-round bug.
+const regressionFields: FieldSpec[] = [
+  { varName: "survey_name", start: 1, end: 4 },
+  { varName: "year", start: 5, end: 8 },
+  { varName: "fss_serial_no", start: 9, end: 13 },
+];
+const regressionRaw = "HCES202265556\n";
+const regressionEncrypted = await encryptFWFToBlob(
+  regressionRaw,
+  regressionFields,
+  new Set(["fss_serial_no"]),
+  base,
+  () => {},
+);
+const regressionEncryptedText = await regressionEncrypted.blob.text();
+const regressionStreamDecrypt = decryptCSVFileToStream(
+  new File([regressionEncryptedText], "regression.csv"),
+  new Set(["fss_serial_no"]),
+  base,
+  () => {},
+);
+const regressionReader = regressionStreamDecrypt.stream.getReader();
+const regressionChunks: Uint8Array[] = [];
+try {
+  while (true) {
+    const next = await regressionReader.read();
+    if (next.done) break;
+    regressionChunks.push(next.value);
+  }
+} finally {
+  regressionReader.releaseLock();
+}
+const regressionDecryptedText = new TextDecoder().decode(
+  Buffer.concat(regressionChunks.map(chunk => Buffer.from(chunk))),
+);
+assert(
+  regressionDecryptedText === "survey_name,year,fss_serial_no\nHCES,2022,65556\n",
+  "numeric large-file decrypt regression failed",
+);
+
 const selective = await roundTrip({ ...base, deterministic: false }, "subset");
 const selectiveLines = selective.decryptedText.trimEnd().split("\n");
 assert(selectiveLines[0] === "A,B,C", "selective output header changed");
