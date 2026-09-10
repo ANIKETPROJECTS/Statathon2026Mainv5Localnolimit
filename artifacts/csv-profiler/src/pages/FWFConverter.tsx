@@ -1028,6 +1028,8 @@ export default function FWFConverter() {
     : currentAnonymizingFile
       ? `Anonymizing ${currentAnonymizingFile.fileName} · ${anonymizedFileCount} of ${activatedFiles.length} files complete`
       : `${anonymizedFileCount} of ${activatedFiles.length} files anonymized`;
+  const allAnonFilesCollapsed = activatedFiles.length > 1
+    && activatedFiles.every(df => collapsedAnonFiles.has(df.id));
 
   const phase = readyLayouts.length === 0 ? 0 : assignedFiles.length === 0 ? 1 : 2;
 
@@ -1284,6 +1286,25 @@ export default function FWFConverter() {
       )}
 
       {/* ── Per-file processing cards ─────────────────────────────────────── */}
+      {activatedFiles.length > 1 && (
+        <div className="flex justify-end">
+          <button
+            onClick={() => setCollapsedAnonFiles(prev => {
+              const next = new Set(prev);
+              for (const df of activatedFiles) {
+                if (allAnonFilesCollapsed) next.delete(df.id);
+                else next.add(df.id);
+              }
+              return next;
+            })}
+            className="flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-200 bg-white text-sm font-semibold text-gray-600 hover:text-black hover:border-gray-300 transition-colors"
+            aria-label={allAnonFilesCollapsed ? "Expand all file sections" : "Minimize all file sections"}
+          >
+            {allAnonFilesCollapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+            {allAnonFilesCollapsed ? "Expand all files" : "Minimize all files"}
+          </button>
+        </div>
+      )}
       {activatedFiles.map(df => {
         const lo = layouts.find(l => l.id === df.layoutId);
         if (!lo?.result) return null;
