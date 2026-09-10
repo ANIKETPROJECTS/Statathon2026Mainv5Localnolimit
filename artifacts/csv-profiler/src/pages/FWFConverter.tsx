@@ -912,6 +912,19 @@ export default function FWFConverter() {
       <input ref={decryptInputRef} type="file" accept=".csv" className="hidden"
         onChange={e => { const f = Array.from(e.target.files ?? []); if (f.length) handleDecryptFile(f[0]); e.target.value = ""; }} />
 
+      {activatedFiles.length === 0 && anonMode === "encrypt" && (
+        <div className="border border-blue-200 bg-blue-50 rounded-2xl px-6 py-5 flex flex-col sm:flex-row sm:items-center gap-4">
+          <div className="flex-1">
+            <h2 className="text-base font-semibold text-blue-950">Already have an encrypted CSV?</h2>
+            <p className="text-sm text-blue-800 mt-1">Open direct decryption without uploading layouts or fixed-width data files.</p>
+          </div>
+          <button onClick={() => setAnonMode("decrypt")}
+            className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 transition-colors whitespace-nowrap">
+            <LockOpen className="w-4 h-4" />Decrypt a CSV directly
+          </button>
+        </div>
+      )}
+
       {/* ── Step indicator ────────────────────────────────────────────────── */}
       <div className="flex items-center justify-center gap-3 flex-wrap">
         {(["Upload layouts", "Assign to data files", "Process & download"] as const).map((label, idx) => (
@@ -1038,7 +1051,7 @@ export default function FWFConverter() {
       </div>
 
       {/* ── Global encryption settings (shown when any file is activated) ── */}
-      {activatedFiles.length > 0 && (
+      {(activatedFiles.length > 0 || anonMode === "decrypt") && (
         <div className="border border-gray-200 rounded-2xl overflow-hidden">
           <div className="bg-emerald-50 border-b border-emerald-100 px-6 py-5 flex flex-col sm:flex-row sm:items-center gap-4">
             <div className="flex items-center gap-4 flex-1 min-w-0">
@@ -1197,61 +1210,79 @@ export default function FWFConverter() {
                 </>
               )}
 
-              {anonMode === "decrypt" && (
-                <div className="space-y-5">
-                  <p className="text-sm text-gray-500">Decrypt mode: upload an encrypted CSV created from this or another file.</p>
-                   {!decryptFile ? (
-                    <DropZone accept=".csv" icon={<LockOpen className="w-9 h-9 text-blue-600" />}
-                      label="Drop anonymized CSV here" sublabel=".CSV encrypted by this tool"
-                      inputRef={decryptInputRef} onFiles={files => handleDecryptFile(files[0])} />
-                  ) : (
-                    <div className="space-y-4">
-                      <div className="flex items-center gap-2">
-                        <SuccessBadge text={`${decryptFileName} — ${decryptHeaders.length} columns`} />
-                         <button onClick={() => {
-                           setDecryptFileName(""); setDecryptFile(null); setDecryptCsvText(null);
-                           setDecryptHeaders([]); setDecryptCols(new Set()); setDecryptBlob(null);
-                           setDecryptEncryptedPreview([]); setDecryptDecryptedPreview([]);
-                           setDecryptOutputSaved(false); setDecryptOutputName("");
-                         }}
-                          className="ml-auto text-gray-400 hover:text-black"><X className="w-4 h-4" /></button>
-                      </div>
-                      <ColSelector allCols={decryptHeaders} selected={decryptCols} onChange={setDecryptCols} label="Columns to decrypt" />
-                    </div>
-                  )}
-                  {decryptError && <ErrorBox message={decryptError} />}
-                  {decryptRunning && <ProgressBar pct={decryptProgress} label={`Decrypting ${decryptCols.size} column${decryptCols.size !== 1 ? "s" : ""}…`} icon={<Shuffle className="w-4 h-4 animate-spin" />} />}
-                   {!decryptBlob && !decryptOutputSaved ? (
-                     <button onClick={handleDecrypt} disabled={decryptRunning || !decryptFile || decryptCols.size === 0}
-                      className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-black text-white text-base font-semibold hover:bg-gray-800 disabled:opacity-50 transition-colors">
-                      {decryptRunning ? <><Spin />Decrypting…</> : <><LockOpen className="w-4 h-4" />Apply 4-round FPE decryption</>}
-                    </button>
-                  ) : (
-                     <div className="space-y-4">
-                      <SuccessBadge text="Decryption complete — original values restored" />
-                       {decryptOutputSaved && (
-                         <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
-                           Large-file mode wrote the decrypted CSV directly to <strong>{decryptOutputName}</strong> without loading the complete file into memory.
-                         </div>
-                       )}
-                      <div className="flex flex-col sm:flex-row gap-3">
-                         {!decryptOutputSaved && <button onClick={() => triggerDownload(decryptBlob!, `${decryptFileName.replace(/\.csv$/i, "")}_decrypted.csv`)}
-                          className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-emerald-600 text-white font-semibold hover:bg-emerald-700 transition-colors">
-                          <Download className="w-4 h-4" />Download decrypted CSV
-                         </button>}
-                         {(decryptBlob || decryptOutputSaved) && <button onClick={handleOpenDecryptCompare}
-                          className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 border-emerald-500 text-emerald-700 text-sm font-semibold hover:bg-emerald-50 transition-colors">
-                          <Columns2 className="w-4 h-4" />View side by side
-                         </button>}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
             </div>
           </div>
         );
       })}
+
+      {anonMode === "decrypt" && (
+        <div className="border border-blue-200 rounded-2xl overflow-hidden">
+          <div className="bg-blue-50 border-b border-blue-100 px-6 py-5 flex flex-col sm:flex-row sm:items-center gap-4">
+            <div className="flex items-center gap-4 flex-1 min-w-0">
+              <div className="w-12 h-12 rounded-2xl bg-white border border-blue-200 flex items-center justify-center flex-shrink-0">
+                <LockOpen className="w-6 h-6 text-blue-600" />
+              </div>
+              <div>
+                <h2 className="text-lg font-semibold text-black">Direct CSV decryption</h2>
+                <p className="text-sm text-gray-500 mt-0.5">Decrypt an existing AIRAVATA DEA CSV without a layout file.</p>
+              </div>
+            </div>
+            <button onClick={() => setAnonMode("encrypt")}
+              className="flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-blue-300 bg-white text-sm font-semibold text-blue-700 hover:bg-blue-100 transition-colors">
+              <Lock className="w-4 h-4" />Back to anonymization
+            </button>
+          </div>
+          <div className="p-6 space-y-5">
+            <p className="text-sm text-gray-500">Upload an encrypted CSV created by this tool, enter the same key settings, and select the columns to restore.</p>
+            {!decryptFile ? (
+              <DropZone accept=".csv" icon={<LockOpen className="w-9 h-9 text-blue-600" />}
+                label="Drop anonymized CSV here" sublabel=".CSV encrypted by this tool"
+                inputRef={decryptInputRef} onFiles={files => handleDecryptFile(files[0])} />
+            ) : (
+              <div className="space-y-4">
+                <div className="flex items-center gap-2">
+                  <SuccessBadge text={`${decryptFileName} — ${decryptHeaders.length} columns`} />
+                  <button onClick={() => {
+                    setDecryptFileName(""); setDecryptFile(null); setDecryptCsvText(null);
+                    setDecryptHeaders([]); setDecryptCols(new Set()); setDecryptBlob(null);
+                    setDecryptEncryptedPreview([]); setDecryptDecryptedPreview([]);
+                    setDecryptOutputSaved(false); setDecryptOutputName("");
+                  }}
+                    className="ml-auto text-gray-400 hover:text-black"><X className="w-4 h-4" /></button>
+                </div>
+                <ColSelector allCols={decryptHeaders} selected={decryptCols} onChange={setDecryptCols} label="Columns to decrypt" />
+              </div>
+            )}
+            {decryptError && <ErrorBox message={decryptError} />}
+            {decryptRunning && <ProgressBar pct={decryptProgress} label={`Decrypting ${decryptCols.size} column${decryptCols.size !== 1 ? "s" : ""}…`} icon={<Shuffle className="w-4 h-4 animate-spin" />} />}
+            {!decryptBlob && !decryptOutputSaved ? (
+              <button onClick={handleDecrypt} disabled={decryptRunning || !decryptFile || decryptCols.size === 0}
+                className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-black text-white text-base font-semibold hover:bg-gray-800 disabled:opacity-50 transition-colors">
+                {decryptRunning ? <><Spin />Decrypting…</> : <><LockOpen className="w-4 h-4" />Apply 4-round FPE decryption</>}
+              </button>
+            ) : (
+              <div className="space-y-4">
+                <SuccessBadge text="Decryption complete — original values restored" />
+                {decryptOutputSaved && (
+                  <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+                    Large-file mode wrote the decrypted CSV directly to <strong>{decryptOutputName}</strong> without loading the complete file into memory.
+                  </div>
+                )}
+                <div className="flex flex-col sm:flex-row gap-3">
+                  {!decryptOutputSaved && <button onClick={() => triggerDownload(decryptBlob!, `${decryptFileName.replace(/\.csv$/i, "")}_decrypted.csv`)}
+                    className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-emerald-600 text-white font-semibold hover:bg-emerald-700 transition-colors">
+                    <Download className="w-4 h-4" />Download decrypted CSV
+                  </button>}
+                  {(decryptBlob || decryptOutputSaved) && <button onClick={handleOpenDecryptCompare}
+                    className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 border-emerald-500 text-emerald-700 text-sm font-semibold hover:bg-emerald-50 transition-colors">
+                    <Columns2 className="w-4 h-4" />View side by side
+                  </button>}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* ── Compare modals ────────────────────────────────────────────────── */}
       {showCompare && (
