@@ -628,33 +628,34 @@ export function convertFWFFileToStream(
   const generator = (async function* () {
     const header = fields.map((f) => csvCell(f.varName)).join(",");
     let output = `${header}\n`;
-    let dataLineCount = 0;
     let firstNonEmpty = true;
-    let hasCsvHeader = false;
+    let lastByteProgress = -1;
+    const onBytesProgress = (bytesRead: number, totalBytes: number) => {
+      const next = totalBytes > 0
+        ? Math.min(99, Math.round((bytesRead / totalBytes) * 100))
+        : 0;
+      if (next !== lastByteProgress) {
+        lastByteProgress = next;
+        options.onBytesProgress?.(bytesRead, totalBytes);
+      }
+    };
 
-    const flush = async function* () {
+    for await (const line of iterateTextFileLines(file, onBytesProgress)) {
+      if (line.length === 0) continue;
+      if (firstNonEmpty) {
+        firstNonEmpty = false;
+        if (line.includes(",")) continue;
+      }
+      const cells = fields.map((f) => {
+        const raw = line.substring(f.start - 1, f.end);
+        return csvCell(raw.trim());
+      });
+      output += `${cells.join(",")}\n`;
       if (output.length >= 256 * 1024) {
         const chunk = output;
         output = "";
         yield chunk;
       }
-    };
-
-    for await (const line of iterateTextFileLines(file, options.onBytesProgress)) {
-      if (line.length === 0) continue;
-      if (firstNonEmpty) {
-        firstNonEmpty = false;
-        hasCsvHeader = line.includes(",");
-        if (hasCsvHeader) continue;
-      }
-      const cells = fields.map((f) => {
-        const raw = line.padEnd(f.end).substring(f.start - 1, f.end);
-        return csvCell(raw.trim());
-      });
-      output += `${cells.join(",")}\n`;
-      dataLineCount++;
-      options.onProgress?.(Math.min(99, Math.round((dataLineCount / Math.max(1, dataLineCount + 1)) * 100)));
-      yield* flush();
     }
 
     if (output) yield output;

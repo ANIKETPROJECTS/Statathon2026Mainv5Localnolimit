@@ -524,6 +524,105 @@ function decryptChain4V2(ksArr: Uint8Array[], value: string): string {
   return v;
 }
 
+interface FastFpeLookup {
+  ksBytes: Uint8Array;
+  digit9: Uint8Array[];
+  digit10: Uint8Array[];
+  upper26: Uint8Array[];
+  lower26: Uint8Array[];
+  symbols33: Uint8Array[];
+}
+
+interface FastDeterministicCipher {
+  rounds: FastFpeLookup[];
+}
+
+function buildFastFpeLookup(ksBytes: Uint8Array): FastFpeLookup {
+  // New compact files use DET_KS_SIZE, which supports the normal fixed-width
+  // field limit of 256 characters. Lookup tables replace 20 arithmetic FPE
+  // operations per character with one typed-array lookup per round.
+  const positionCount = Math.min(256, Math.ceil(ksBytes.length / 5));
+  const build = (size: number, muls: number[]) => {
+    const tables: Uint8Array[] = [];
+    for (let pos = 0; pos < positionCount; pos++) {
+      const table = new Uint8Array(size);
+      for (let input = 0; input < size; input++) {
+        let value = input;
+        for (let op = 0; op < 5; op++) {
+          const k = ksBytes[(pos * 5 + op) % ksBytes.length];
+          value = applyOpFwd(value, k, size, muls);
+        }
+        table[input] = value;
+      }
+      tables.push(table);
+    }
+    return tables;
+  };
+
+  return {
+    ksBytes,
+    digit9: build(9, getMuls(9)),
+    digit10: build(10, getMuls(10)),
+    upper26: build(26, getMuls(26)),
+    lower26: build(26, getMuls(26)),
+    symbols33: build(SYMBOL_CHARS.length, getMuls(SYMBOL_CHARS.length)),
+  };
+}
+
+function encryptFpeLookupRound(
+  lookup: FastFpeLookup,
+  value: string,
+): string {
+  // Preserve the original Unicode/pass-through behavior for unexpected
+  // non-ASCII input; fixed-width survey files normally use ASCII.
+  for (let i = 0; i < value.length; i++) {
+    if (value.charCodeAt(i) > 0x7f) return encryptFPECell(lookup.ksBytes, value);
+  }
+
+  let output = "";
+  for (let pos = 0; pos < value.length; pos++) {
+    const code = value.charCodeAt(pos);
+    if (pos >= lookup.digit10.length) {
+      return encryptFPECell(lookup.ksBytes, value);
+    }
+
+    if (pos === 0 && code >= 48 && code <= 57) {
+      if (code === 48) {
+        output += value[pos];
+      } else {
+        output += String.fromCharCode(lookup.digit9[pos][code - 49] + 49);
+      }
+      continue;
+    }
+
+    if (code >= 48 && code <= 57) {
+      output += String.fromCharCode(lookup.digit10[pos][code - 48] + 48);
+    } else if (code >= 65 && code <= 90) {
+      output += String.fromCharCode(lookup.upper26[pos][code - 65] + 65);
+    } else if (code >= 97 && code <= 122) {
+      output += String.fromCharCode(lookup.lower26[pos][code - 97] + 97);
+    } else {
+      const symbolIndex = SYMBOL_CHARS.indexOf(value[pos]);
+      output += symbolIndex === -1
+        ? value[pos]
+        : SYMBOL_CHARS[lookup.symbols33[pos][symbolIndex]];
+    }
+  }
+  return output;
+}
+
+function buildFastDeterministicCipher(ksArr: Uint8Array[]): FastDeterministicCipher {
+  return { rounds: ksArr.map(buildFastFpeLookup) };
+}
+
+function encryptChain4Fast(cipher: FastDeterministicCipher, value: string): string {
+  let result = value;
+  for (const lookup of cipher.rounds) {
+    result = encryptFpeLookupRound(lookup, result);
+  }
+  return result;
+}
+
 // ── Alphanumeric output (5th pass) ────────────────────────────────────────────
 function deriveAlnumKey(keyChain: string[]): string {
   let h = 0xA1B2C3D4;
@@ -1210,6 +1309,8 @@ export async function encryptFWFFileToStream(
     : keyChain[0];
   const alnumKey = options.alphanumericOutput ? deriveAlnumKey(keyChain) : "";
   const colAlnumKs: Record<string, Uint8Array> = {};
+  const deterministicKs: Record<string, Uint8Array[]> = {};
+  const deterministicCiphers: Record<string, FastDeterministicCipher> = {};
 
   if (options.alphanumericOutput) {
     for (const f of fields) {
@@ -1223,22 +1324,38 @@ export async function encryptFWFFileToStream(
     }
   }
 
+  if (options.deterministic) {
+    for (const f of fields) {
+      if (encCols.has(f.varName)) {
+        deterministicKs[f.varName] = keyChain.map(kh =>
+          makeCellKsBytes(DET_KS_SIZE, kh, hashColIV(kh, f.varName))
+        );
+        deterministicCiphers[f.varName] = buildFastDeterministicCipher(
+          deterministicKs[f.varName],
+        );
+      }
+    }
+  }
+
   await computeKeyFingerprint(keyChain);
   const generator = (async function* () {
     let output = fields.map(f => csvEscape(f.varName)).join(",") + "\n";
     let firstNonEmpty = true;
     const ivCounters: Record<string, number> = {};
+    const deterministicCache = new Map<string, string>();
+    const deterministicCacheLimit = 100_000;
+    let lastProgress = -1;
 
-    const flush = async function* () {
-      if (output.length >= 256 * 1024) {
-        const chunk = output;
-        output = "";
-        yield chunk;
+    const emitProgress = (pct: number) => {
+      const next = Math.min(99, Math.max(0, Math.round(pct)));
+      if (next !== lastProgress) {
+        lastProgress = next;
+        onProgress(next);
       }
     };
 
     for await (const line of iterateTextFileLines(file, (read, total) => {
-      onProgress(total > 0 ? Math.min(99, Math.round((read / total) * 100)) : 0);
+      emitProgress(total > 0 ? (read / total) * 100 : 0);
     })) {
       if (line.length === 0) continue;
       if (firstNonEmpty) {
@@ -1248,14 +1365,20 @@ export async function encryptFWFFileToStream(
 
       const csvCells: string[] = [];
       for (const f of fields) {
-        let val = line.padEnd(f.end).substring(f.start - 1, f.end).trim();
+        let val = line.substring(f.start - 1, f.end).trim();
 
         if (encCols.has(f.varName) && val.length > 0) {
           if (options.deterministic) {
-            const ksArr = keyChain.map(kh =>
-              makeCellKsBytes(DET_KS_SIZE, kh, hashColIV(kh, f.varName))
-            );
-            val = encryptChain4(ksArr, val);
+            const cacheKey = `${f.varName}\x00${val}`;
+            const cached = deterministicCache.get(cacheKey);
+            if (cached !== undefined) {
+              val = cached;
+            } else {
+              val = encryptChain4Fast(deterministicCiphers[f.varName], val);
+              if (deterministicCache.size < deterministicCacheLimit) {
+                deterministicCache.set(cacheKey, val);
+              }
+            }
           } else {
             ivCounters[f.varName] = ((ivCounters[f.varName] ?? 0) + 1) >>> 0;
             const columnSeed = hashColIV(keyChain[0], f.varName);
@@ -1278,7 +1401,11 @@ export async function encryptFWFFileToStream(
       }
 
       output += csvCells.join(",") + "\n";
-      yield* flush();
+      if (output.length >= 256 * 1024) {
+        const chunk = output;
+        output = "";
+        yield chunk;
+      }
     }
 
     if (output) yield output;
