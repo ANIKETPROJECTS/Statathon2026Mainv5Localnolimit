@@ -1342,8 +1342,12 @@ export async function encryptFWFFileToStream(
     let output = fields.map(f => csvEscape(f.varName)).join(",") + "\n";
     let firstNonEmpty = true;
     const ivCounters: Record<string, number> = {};
+    // Deterministic mode maps the same plaintext in the same column to the
+    // same ciphertext. Keep a bounded LRU so recurring identifiers continue
+    // to reuse their result without allowing a high-cardinality 1 GB file to
+    // grow an unbounded in-memory dictionary.
     const deterministicCache = new Map<string, string>();
-    const deterministicCacheLimit = 100_000;
+    const deterministicCacheLimit = 500_000;
     let lastProgress = -1;
 
     const emitProgress = (pct: number) => {
@@ -1372,12 +1376,18 @@ export async function encryptFWFFileToStream(
             const cacheKey = `${f.varName}\x00${val}`;
             const cached = deterministicCache.get(cacheKey);
             if (cached !== undefined) {
+              // Refresh frequently recurring values so the cache follows the
+              // working set instead of retaining only the first rows.
+              deterministicCache.delete(cacheKey);
+              deterministicCache.set(cacheKey, cached);
               val = cached;
             } else {
               val = encryptChain4Fast(deterministicCiphers[f.varName], val);
-              if (deterministicCache.size < deterministicCacheLimit) {
-                deterministicCache.set(cacheKey, val);
+              if (deterministicCache.size >= deterministicCacheLimit) {
+                const oldest = deterministicCache.keys().next().value;
+                if (oldest !== undefined) deterministicCache.delete(oldest);
               }
+              deterministicCache.set(cacheKey, val);
             }
           } else {
             ivCounters[f.varName] = ((ivCounters[f.varName] ?? 0) + 1) >>> 0;
