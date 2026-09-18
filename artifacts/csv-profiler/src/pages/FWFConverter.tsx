@@ -16,6 +16,7 @@ import {
   type AnonymizeOptions,
 } from "@/lib/anonymize";
 import { exportAs, EXPORT_FORMATS, type ExportFormat } from "@/lib/format-export";
+import { useColumnPreferences } from "@/lib/column-preferences-context";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -222,6 +223,18 @@ function normalizeMatchStem(value: string): string {
     .replace(/[^a-z0-9]/g, "");
 }
 
+function normalizeColumnPreference(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function preferredColumnsForLayout(layout: LayoutEntry | undefined, preferredColumns: string[]): string[] {
+  if (!layout?.result || preferredColumns.length === 0) return [];
+  const preferred = new Set(preferredColumns.map(normalizeColumnPreference).filter(Boolean));
+  return layout.result.fields
+    .filter(field => preferred.has(normalizeColumnPreference(field.varName)))
+    .map(field => field.varName);
+}
+
 function matchTokens(value: string): string[] {
   return value.toLowerCase()
     .match(/[a-z]+|\d+/g)
@@ -291,6 +304,7 @@ export default function FWFConverter() {
   const [anonStrongDiffusion, setAnonStrongDiffusion] = useState(true);
   const { alphanumeric: anonAlphanumeric, setAlphanumeric: setAnonAlphanumeric } = useEncryptionSettings();
   const [anonKeyHexInput, setAnonKeyHexInput] = useState("");
+  const { preferredColumns } = useColumnPreferences();
 
   // Global decrypt panel
   const [decryptFileName, setDecryptFileName] = useState("");
@@ -726,10 +740,11 @@ export default function FWFConverter() {
       );
     }
     patchFile(setDataFiles, dfId, {
-      layoutId, preview, activated: false, step: "ready", encColsList: [],
+      layoutId, preview, activated: false, step: "ready",
+      encColsList: preferredColumnsForLayout(lo, preferredColumns),
       encResultBlob: null, encResultKey: null, encPreview: [], encOutputSaved: false, encOutputName: "", encError: "",
     });
-  }, [dataFiles, layouts]);
+  }, [dataFiles, layouts, preferredColumns]);
 
   const autoAssignLayouts = useCallback(async () => {
     const candidates = dataFiles.filter(df => !df.layoutId && df.lineCount > 0);
@@ -788,16 +803,26 @@ export default function FWFConverter() {
   const activateDataFile = useCallback((id: string) => {
     setDataFiles(prev => prev.map(df => {
       if (df.id !== id) return df;
-      return { ...df, activated: true, encColsList: [] };
+      const lo = layouts.find(layout => layout.id === df.layoutId);
+      return {
+        ...df,
+        activated: true,
+        encColsList: preferredColumnsForLayout(lo, preferredColumns),
+      };
     }));
-  }, []);
+  }, [layouts, preferredColumns]);
 
   const activateAllDataFiles = useCallback(() => {
     setDataFiles(prev => prev.map(df => {
       if (df.activated || !df.layoutId || df.lineCount <= 0) return df;
-      return { ...df, activated: true, encColsList: [] };
+      const lo = layouts.find(layout => layout.id === df.layoutId);
+      return {
+        ...df,
+        activated: true,
+        encColsList: preferredColumnsForLayout(lo, preferredColumns),
+      };
     }));
-  }, []);
+  }, [layouts, preferredColumns]);
 
   const handleCommonColumnsChange = useCallback((next: Set<string>) => {
     setCommonSelectedColumns([...next]);

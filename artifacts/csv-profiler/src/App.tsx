@@ -2,13 +2,14 @@ import { Switch, Route, Router as WouterRouter, useLocation } from "wouter";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { Shield, Info } from "lucide-react";
+import { Shield, Info, Settings, X } from "lucide-react";
 import NotFound from "@/pages/not-found";
 import FWFConverter from "@/pages/FWFConverter";
 import InfoPage from "@/pages/Info";
-import RiskAssessmentSingle, { pageCache } from "@/pages/RiskAssessmentSingle";
+import RiskAssessmentSingle from "@/pages/RiskAssessmentSingle";
 import RiskAssessmentComparison from "@/pages/RiskAssessmentComparison";
 import { EncryptionSettingsProvider, useEncryptionSettings } from "@/lib/encryption-settings-context";
+import { ColumnPreferencesProvider, useColumnPreferences } from "@/lib/column-preferences-context";
 import { Component, useCallback, useEffect, useState, type ErrorInfo, type ReactNode } from "react";
 
 function usePackagedHashLocation(): [string, (to: string) => void] {
@@ -65,14 +66,27 @@ const queryClient = new QueryClient({
 });
 
 function AppLayout() {
-  const [location, navigate] = useLocation();
-  const onOriginal   = location.startsWith("/risk-assessment/original");
-  const onAnonymized = location.startsWith("/risk-assessment/anonymized");
-  const onComparison = location.startsWith("/risk-assessment/comparison");
-  const onRisk       = onOriginal || onAnonymized || onComparison;
-
-  const bothReady = !!pageCache.original.result && !!pageCache.anonymized.result;
+  const [, navigate] = useLocation();
   const { alphanumeric, setAlphanumeric } = useEncryptionSettings();
+  const { preferredColumns, setPreferredColumns } = useColumnPreferences();
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [columnDraft, setColumnDraft] = useState("");
+
+  const openSettings = () => {
+    setColumnDraft(preferredColumns.join("\n"));
+    setSettingsOpen(true);
+  };
+
+  const saveSettings = () => {
+    const columns = [...new Set(
+      columnDraft
+        .split(/[\n,]+/)
+        .map(column => column.trim())
+        .filter(Boolean),
+    )];
+    setPreferredColumns(columns);
+    setSettingsOpen(false);
+  };
 
   return (
     <div className="min-h-screen bg-white">
@@ -112,50 +126,13 @@ function AppLayout() {
             Info
           </button>
 
-          {/* Risk Assessment nav — split buttons */}
-          <div className="flex items-center gap-1">
-            <div className="flex items-center gap-0.5 border border-indigo-200 rounded-xl overflow-hidden bg-indigo-50">
-              <span className="flex items-center gap-1.5 pl-3 pr-2 py-2 text-xs font-bold text-indigo-500 select-none">
-                <Shield className="w-3.5 h-3.5" />Risk Assessment
-              </span>
-              <div className="w-px h-5 bg-indigo-200" />
-              <button
-                onClick={() => navigate("/risk-assessment/original")}
-                className={`flex items-center gap-1.5 px-3 py-2 text-sm font-semibold transition-colors ${
-                  onOriginal
-                    ? "bg-blue-600 text-white"
-                    : "text-blue-700 hover:bg-blue-100"
-                }`}>
-                📄 Original File
-              </button>
-              <div className="w-px h-5 bg-indigo-200" />
-              <button
-                onClick={() => navigate("/risk-assessment/anonymized")}
-                className={`flex items-center gap-1.5 px-3 py-2 text-sm font-semibold transition-colors ${
-                  onAnonymized
-                    ? "bg-purple-600 text-white"
-                    : "text-purple-700 hover:bg-purple-100"
-                }`}>
-                🔒 Anonymized File
-              </button>
-              <div className="w-px h-5 bg-indigo-200" />
-              <button
-                onClick={() => navigate("/risk-assessment/comparison")}
-                title={bothReady ? "Compare both datasets" : "Run both analyses first to unlock comparison"}
-                className={`flex items-center gap-1.5 px-3 py-2 text-sm font-semibold transition-colors ${
-                  onComparison
-                    ? "bg-teal-600 text-white"
-                    : bothReady
-                      ? "text-teal-700 hover:bg-teal-100"
-                      : "text-teal-400 hover:bg-teal-50"
-                }`}>
-                ⚖️ Comparison
-                {bothReady && !onComparison && (
-                  <span className="w-1.5 h-1.5 rounded-full bg-teal-500 ml-0.5" />
-                )}
-              </button>
-            </div>
-          </div>
+          <button
+            onClick={openSettings}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 bg-white text-slate-600 text-sm font-medium hover:bg-slate-50 hover:border-slate-300 hover:text-slate-800 transition-all shadow-sm"
+          >
+            <Settings className="w-4 h-4" />
+            Settings
+          </button>
         </div>
       </header>
 
@@ -179,6 +156,46 @@ function AppLayout() {
           <Route component={NotFound} />
         </Switch>
       </main>
+
+      {settingsOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 px-4" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+          <div className="w-full max-w-lg rounded-2xl bg-white shadow-2xl border border-gray-200">
+            <div className="flex items-center justify-between px-6 py-5 border-b border-gray-100">
+              <div>
+                <h2 id="settings-title" className="text-lg font-semibold text-black">Settings</h2>
+                <p className="text-sm text-gray-500 mt-1">Choose columns to select automatically for new files.</p>
+              </div>
+              <button onClick={() => setSettingsOpen(false)} className="p-2 rounded-lg text-gray-400 hover:text-black hover:bg-gray-100 transition-colors" aria-label="Close settings">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-6 space-y-3">
+              <label htmlFor="preferred-columns" className="text-sm font-semibold text-gray-800">
+                Preferred column names
+              </label>
+              <textarea
+                id="preferred-columns"
+                value={columnDraft}
+                onChange={event => setColumnDraft(event.target.value)}
+                placeholder={"survey_name\nfsu_serial_no\nstate"}
+                rows={7}
+                className="w-full resize-y rounded-xl border border-gray-300 px-3 py-2.5 text-sm font-mono text-black focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <p className="text-xs text-gray-500">
+                Enter one name per line or separate names with commas. Matching ignores capitalization, spaces, hyphens, and underscores.
+              </p>
+            </div>
+            <div className="flex justify-end gap-3 px-6 py-4 border-t border-gray-100 bg-gray-50/70 rounded-b-2xl">
+              <button onClick={() => setSettingsOpen(false)} className="px-4 py-2 rounded-lg border border-gray-200 bg-white text-sm font-semibold text-gray-600 hover:text-black hover:border-gray-400 transition-colors">
+                Cancel
+              </button>
+              <button onClick={saveSettings} className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 transition-colors">
+                Save settings
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -236,15 +253,17 @@ function App() {
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <EncryptionSettingsProvider>
-          <AppErrorBoundary>
-            <WouterRouter
-              base={routerBase}
-              hook={isPackagedDesktop ? usePackagedHashLocation : undefined}
-            >
-              <AppLayout />
-            </WouterRouter>
-          </AppErrorBoundary>
-          <Toaster />
+          <ColumnPreferencesProvider>
+            <AppErrorBoundary>
+              <WouterRouter
+                base={routerBase}
+                hook={isPackagedDesktop ? usePackagedHashLocation : undefined}
+              >
+                <AppLayout />
+              </WouterRouter>
+            </AppErrorBoundary>
+            <Toaster />
+          </ColumnPreferencesProvider>
         </EncryptionSettingsProvider>
       </TooltipProvider>
     </QueryClientProvider>
