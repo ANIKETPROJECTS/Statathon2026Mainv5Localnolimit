@@ -215,6 +215,59 @@ function newLayoutEntry(file: File, overrides: Partial<LayoutEntry> = {}): Layou
   };
 }
 
+function normalizeMatchStem(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/\.[a-z0-9]+$/i, "")
+    .replace(/[^a-z0-9]/g, "");
+}
+
+function matchTokens(value: string): string[] {
+  return value.toLowerCase()
+    .match(/[a-z]+|\d+/g)
+    ?.map(token => token === "lv" ? "level" : token)
+    .filter(token => token.length > 1) ?? [];
+}
+
+function extractExplicitLayoutFileNames(value: string): string[] {
+  return [...value.matchAll(/file\s*name\s*[:\-]\s*["']?([^"',;|]+)/gi)]
+    .map(match => match[1].trim().replace(/[.)]+$/, ""))
+    .filter(Boolean);
+}
+
+function extractLevelNumber(value: string): string | null {
+  const levelMatch = value.match(/(?:level|lv)[\s._-]*(\d{1,3})/i);
+  if (levelMatch) return String(Number(levelMatch[1]));
+  const suffixMatch = value.match(/(?:^|[_\s-])(\d{1,3})(?:\.[a-z0-9]+)?$/i);
+  return suffixMatch ? String(Number(suffixMatch[1])) : null;
+}
+
+function scoreLayoutFileMatch(dataFileName: string, layout: LayoutEntry): number {
+  const dataStem = normalizeMatchStem(dataFileName);
+  const dataLevel = extractLevelNumber(dataFileName);
+  const sourceText = `${layout.fileName} ${layout.result?.sheetName ?? ""}`;
+  const explicitNames = extractExplicitLayoutFileNames(sourceText);
+
+  for (const explicitName of explicitNames) {
+    const explicitStem = normalizeMatchStem(explicitName);
+    if (explicitStem === dataStem) return 100;
+    if (explicitStem.length >= 6 && (explicitStem.includes(dataStem) || dataStem.includes(explicitStem))) return 92;
+  }
+
+  const layoutStem = normalizeMatchStem(layout.fileName);
+  if (layoutStem === dataStem) return 88;
+  if (layoutStem.length >= 6 && (layoutStem.includes(dataStem) || dataStem.includes(layoutStem))) return 70;
+
+  const layoutLevel = extractLevelNumber(sourceText);
+  if (dataLevel && layoutLevel && dataLevel === layoutLevel) return 78;
+
+  const dataTokenSet = new Set(matchTokens(dataFileName));
+  const layoutTokenSet = new Set(matchTokens(sourceText));
+  const overlap = [...dataTokenSet].filter(token => layoutTokenSet.has(token));
+  if (overlap.length >= 2) return Math.min(74, 40 + overlap.length * 12);
+  return overlap.length === 1 && overlap[0] !== "hces" ? 48 : 0;
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function FWFConverter() {
@@ -226,6 +279,7 @@ export default function FWFConverter() {
   const [commonSelectedColumns, setCommonSelectedColumns] = useState<string[] | null>(null);
   const [collapsedAnonFiles, setCollapsedAnonFiles] = useState<Set<string>>(new Set());
   const [batchEncryptRunning, setBatchEncryptRunning] = useState(false);
+  const [autoAssignStatus, setAutoAssignStatus] = useState("");
 
   // Global key settings (shared across all file encryptions)
   const [anonMode, setAnonMode] = useState<AnonMode>("encrypt");
@@ -677,6 +731,56 @@ export default function FWFConverter() {
       encResultBlob: null, encResultKey: null, encPreview: [], encOutputSaved: false, encOutputName: "", encError: "",
     });
   }, [dataFiles, layouts]);
+
+  const autoAssignLayouts = useCallback(async () => {
+    const candidates = dataFiles.filter(df => !df.layoutId && df.lineCount > 0);
+    if (candidates.length === 0) {
+      setAutoAssignStatus(dataFiles.length === 0
+        ? "Add TXT files before using auto-assign."
+        : "No unassigned TXT files found. Existing assignments were kept.");
+      return;
+    }
+    if (readyLayouts.length === 0) {
+      setAutoAssignStatus("Load at least one complete layout before using auto-assign.");
+      return;
+    }
+
+    const assignments: Array<{ dfId: string; layoutId: string }> = [];
+    const unmatched: string[] = [];
+    const ambiguous: string[] = [];
+
+    for (const df of candidates) {
+      const ranked = readyLayouts
+        .map(layout => ({ layout, score: scoreLayoutFileMatch(df.fileName, layout) }))
+        .filter(candidate => candidate.score > 0)
+        .sort((a, b) => b.score - a.score);
+      const best = ranked[0];
+      const second = ranked[1];
+      const isAmbiguous = Boolean(
+        best && second && best.score === second.score && second.score >= 70,
+      );
+
+      if (!best || best.score < 70) {
+        unmatched.push(df.fileName);
+      } else if (isAmbiguous) {
+        ambiguous.push(df.fileName);
+      } else {
+        assignments.push({ dfId: df.id, layoutId: best.layout.id });
+      }
+    }
+
+    await Promise.all(assignments.map(({ dfId, layoutId }) => assignLayout(dfId, layoutId)));
+
+    const details: string[] = [];
+    if (assignments.length > 0) {
+      details.push(`assigned ${assignments.length} of ${candidates.length}`);
+    } else {
+      details.push(`assigned 0 of ${candidates.length}`);
+    }
+    if (unmatched.length > 0) details.push(`manual match needed: ${unmatched.join(", ")}`);
+    if (ambiguous.length > 0) details.push(`ambiguous: ${ambiguous.join(", ")}`);
+    setAutoAssignStatus(details.join(" · "));
+  }, [assignLayout, dataFiles, layouts]);
 
   const removeDataFile = useCallback((id: string) => {
     setDataFiles(prev => prev.filter(df => df.id !== id));
@@ -1148,8 +1252,24 @@ export default function FWFConverter() {
             <div>
               <h2 className="text-lg font-semibold text-black">Step 2 — Data files (.TXT)</h2>
               <p className="text-sm text-gray-500 mt-0.5">Fixed-width records — assign a layout to each</p>
+              {autoAssignStatus && (
+                <p className="text-xs text-blue-700 mt-2 max-w-2xl" role="status">
+                  {autoAssignStatus}
+                </p>
+              )}
             </div>
             <div className="flex flex-wrap items-center gap-2 flex-shrink-0">
+              {dataFiles.length > 0 && (
+                <button
+                  onClick={autoAssignLayouts}
+                  disabled={readyLayouts.length === 0 || dataFiles.every(df => df.layoutId || df.lineCount <= 0)}
+                  title={readyLayouts.length > 0
+                    ? "Match unassigned TXT files to their most likely layouts"
+                    : "Load at least one complete layout first"}
+                  className="flex items-center gap-1.5 text-sm font-semibold px-3 py-2 rounded-xl border border-blue-300 text-blue-700 bg-blue-50 hover:bg-blue-100 disabled:opacity-40 transition-colors whitespace-nowrap">
+                  <Shuffle className="w-4 h-4" />Auto-assign layouts
+                </button>
+              )}
               {dataFiles.length > 1 && pendingDataFiles.length > 0 && (
                 <button
                   onClick={activateAllDataFiles}
