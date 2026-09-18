@@ -725,9 +725,8 @@ export default function FWFConverter() {
         lo.result!.fields.map(f => line.padEnd(f.end).substring(f.start - 1, f.end).trim())
       );
     }
-    const encColsList = lo?.result?.fields.map(f => f.varName) ?? [];
     patchFile(setDataFiles, dfId, {
-      layoutId, preview, activated: false, step: "ready", encColsList,
+      layoutId, preview, activated: false, step: "ready", encColsList: [],
       encResultBlob: null, encResultKey: null, encPreview: [], encOutputSaved: false, encOutputName: "", encError: "",
     });
   }, [dataFiles, layouts]);
@@ -789,23 +788,16 @@ export default function FWFConverter() {
   const activateDataFile = useCallback((id: string) => {
     setDataFiles(prev => prev.map(df => {
       if (df.id !== id) return df;
-      const lo = layouts.find(l => l.id === df.layoutId);
-      const encColsList = lo?.result?.fields.map(f => f.varName) ?? [];
-      return { ...df, activated: true, encColsList };
+      return { ...df, activated: true, encColsList: [] };
     }));
-  }, [layouts]);
+  }, []);
 
   const activateAllDataFiles = useCallback(() => {
     setDataFiles(prev => prev.map(df => {
       if (df.activated || !df.layoutId || df.lineCount <= 0) return df;
-      const lo = layouts.find(l => l.id === df.layoutId);
-      return {
-        ...df,
-        activated: true,
-        encColsList: lo?.result?.fields.map(f => f.varName) ?? [],
-      };
+      return { ...df, activated: true, encColsList: [] };
     }));
-  }, [layouts]);
+  }, []);
 
   const handleCommonColumnsChange = useCallback((next: Set<string>) => {
     setCommonSelectedColumns([...next]);
