@@ -18,6 +18,7 @@
   "build": {
     "appId": "com.airavata.dea.csvprofiler",
     "productName": "AIRAVATA DEA CSV Profiler",
+    "executableName": "airavata-dea-csv-profiler",
     "directories": {
       "output": "release"
     },

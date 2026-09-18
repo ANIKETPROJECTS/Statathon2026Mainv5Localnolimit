@@ -1,6 +1,6 @@
 [Desktop Entry]
 Name=AIRAVATA DEA CSV Profiler
-Exec=@workspacecsv-profiler-desktop %U
+Exec=airavata-dea-csv-profiler %U
 Terminal=false
 Type=Application
 Icon=${SNAP}/meta/gui/icon.png

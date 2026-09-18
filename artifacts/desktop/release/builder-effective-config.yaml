@@ -3,6 +3,7 @@ directories:
   buildResources: build
 appId: com.airavata.dea.csvprofiler
 productName: AIRAVATA DEA CSV Profiler
+executableName: airavata-dea-csv-profiler
 files:
   - filter:
       - main.cjs

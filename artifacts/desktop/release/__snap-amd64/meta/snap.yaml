@@ -18,7 +18,7 @@ plugs:
     interface: content
     target: $SNAP/data-dir/sounds
     default-provider: gtk-common-themes
-name: '@workspacecsv-profiler-desktop'
+name: airavata-dea-csv-profiler
 version: 1.0.0
 title: AIRAVATA DEA CSV Profiler
 summary: AIRAVATA DEA CSV Profiler
@@ -26,7 +26,7 @@ description: ''
 architectures:
   - amd64
 apps:
-  '@workspacecsv-profiler-desktop':
+  airavata-dea-csv-profiler:
     command: command.sh
     plugs:
       - desktop
