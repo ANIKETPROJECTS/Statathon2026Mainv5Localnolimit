@@ -86,6 +86,33 @@ ipcMain.handle("close-output-file", async (_event, id) => {
   outputStreams.delete(id);
 });
 
+function columnPreferencesPath() {
+  return path.join(app.getPath("userData"), "column-preferences.json");
+}
+
+ipcMain.handle("get-column-preferences", async () => {
+  try {
+    const stored = JSON.parse(fs.readFileSync(columnPreferencesPath(), "utf8"));
+    return Array.isArray(stored)
+      ? stored.filter((value) => typeof value === "string" && value.trim().length > 0)
+      : [];
+  } catch (error) {
+    if (error && error.code === "ENOENT") return null;
+    console.error("Could not read saved column preferences:", error);
+    return null;
+  }
+});
+
+ipcMain.handle("set-column-preferences", async (_event, columns) => {
+  const safeColumns = Array.isArray(columns)
+    ? [...new Set(columns.filter((value) => typeof value === "string" && value.trim().length > 0)
+      .map((value) => value.trim()))]
+    : [];
+  const preferencesFile = columnPreferencesPath();
+  fs.mkdirSync(path.dirname(preferencesFile), { recursive: true });
+  fs.writeFileSync(preferencesFile, JSON.stringify(safeColumns, null, 2), "utf8");
+});
+
 app.whenReady().then(() => {
   createWindow();
   app.on("activate", () => {

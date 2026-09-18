@@ -99,6 +99,8 @@ declare global {
       createOutputFile: (folder: string, name: string) => Promise<string>;
       writeOutputChunk: (id: string, chunk: Uint8Array) => Promise<void>;
       closeOutputFile: (id: string) => Promise<void>;
+      getColumnPreferences: () => Promise<string[] | null>;
+      setColumnPreferences: (columns: string[]) => Promise<void>;
     };
     showSaveFilePicker?: (options?: {
       suggestedName?: string;

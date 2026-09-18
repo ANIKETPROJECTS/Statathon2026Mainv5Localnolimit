@@ -4,5 +4,7 @@ contextBridge.exposeInMainWorld("desktopAPI", {
   chooseOutputFolder: () => ipcRenderer.invoke("choose-output-folder"),
   createOutputFile: (folder, name) => ipcRenderer.invoke("create-output-file", folder, name),
   writeOutputChunk: (id, chunk) => ipcRenderer.invoke("write-output-chunk", id, chunk),
-  closeOutputFile: (id) => ipcRenderer.invoke("close-output-file", id)
+  closeOutputFile: (id) => ipcRenderer.invoke("close-output-file", id),
+  getColumnPreferences: () => ipcRenderer.invoke("get-column-preferences"),
+  setColumnPreferences: (columns) => ipcRenderer.invoke("set-column-preferences", columns)
 });

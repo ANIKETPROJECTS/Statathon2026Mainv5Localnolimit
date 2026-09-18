@@ -26,15 +26,60 @@ function readStoredColumns(): string[] {
 }
 
 export function ColumnPreferencesProvider({ children }: { children: React.ReactNode }) {
-  const [preferredColumns, setPreferredColumns] = useState<string[]>(readStoredColumns);
+  const [preferredColumns, setPreferredColumns] = useState<string[]>([]);
+  const [storageReady, setStorageReady] = useState(false);
 
   useEffect(() => {
+    let cancelled = false;
+    const loadPreferences = async () => {
+      const browserColumns = readStoredColumns();
+      const desktopStorage = window.desktopAPI?.getColumnPreferences;
+
+      if (!desktopStorage) {
+        if (!cancelled) {
+          setPreferredColumns(browserColumns);
+          setStorageReady(true);
+        }
+        return;
+      }
+
+      try {
+        const desktopColumns = await desktopStorage();
+        if (cancelled) return;
+        setPreferredColumns(desktopColumns ?? browserColumns);
+        setStorageReady(true);
+
+        // Migrate preferences saved by an earlier renderer-only version.
+        if (desktopColumns === null && browserColumns.length > 0) {
+          await window.desktopAPI?.setColumnPreferences(browserColumns);
+        }
+      } catch {
+        if (!cancelled) {
+          setPreferredColumns(browserColumns);
+          setStorageReady(true);
+        }
+      }
+    };
+
+    void loadPreferences();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!storageReady) return;
     try {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(preferredColumns));
     } catch {
       // Browser storage can be unavailable in private or restricted contexts.
     }
-  }, [preferredColumns]);
+    if (window.desktopAPI?.setColumnPreferences) {
+      void window.desktopAPI.setColumnPreferences(preferredColumns).catch(() => {
+        // The renderer still keeps the browser fallback if desktop storage fails.
+      });
+    }
+  }, [preferredColumns, storageReady]);
 
   return (
     <ColumnPreferencesContext.Provider value={{ preferredColumns, setPreferredColumns }}>
