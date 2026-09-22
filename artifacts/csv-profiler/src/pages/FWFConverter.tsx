@@ -1268,28 +1268,23 @@ export default function FWFConverter() {
 
   const handleDecryptFiles = useCallback(async (files: File[]) => {
     setDecryptError("");
-    const filesNeedLayouts = decryptionFormat === "txt" || files.some(file => /\.txt$/i.test(file.name));
-    if (filesNeedLayouts && decryptLayoutIds.length === 0) {
-      setDecryptError("Select one or more matching layout files before adding files for TXT decryption.");
-      return;
-    }
+    const allLayoutIds = layouts.filter(layout => layout.result).map(layout => layout.id);
     const loaded: Array<DecryptFile | null> = await Promise.all(files.map(async file => {
       const text = file.size >= STREAMING_FILE_THRESHOLD
         ? await file.slice(0, 64 * 1024).text()
         : await file.text();
       const isFixedWidth = /\.txt$/i.test(file.name);
       const layoutEntry = (isFixedWidth || decryptionFormat === "txt")
-        ? chooseDecryptLayout(file.name, layouts, decryptLayoutIds)
+        ? chooseDecryptLayout(file.name, layouts, allLayoutIds)
         : undefined;
       if (isFixedWidth) {
-        if (!layoutEntry?.result) return null;
-        const fields = layoutEntry.result.fields;
+        const fields = layoutEntry?.result?.fields ?? [];
         return {
           id: uid(),
           file,
           fileName: file.name,
           isFixedWidth: true,
-          layoutId: layoutEntry.id,
+          layoutId: layoutEntry?.id ?? "",
           fixedWidthPreviewText: text,
           csvText: null,
           headers: fields.map(field => field.varName),
@@ -1341,7 +1336,7 @@ export default function FWFConverter() {
       : decryptCommonSelectedColumns.filter(column => common.includes(column));
     setDecryptCommonSelectedColumns(selectedCommon);
     setDecryptFiles(next);
-  }, [decryptFiles, decryptCommonSelectedColumns, decryptLayoutIds, decryptionFormat, layouts, preferredDecryptionColumns]);
+  }, [decryptFiles, decryptCommonSelectedColumns, decryptionFormat, layouts, preferredDecryptionColumns]);
 
   const removeDecryptFile = useCallback((id: string) => {
     const next = decryptFiles.filter(file => file.id !== id);
@@ -1387,36 +1382,6 @@ export default function FWFConverter() {
       ? previous.filter(column => common.includes(column))
       : null);
   }, [decryptFiles, layouts, preferredDecryptionColumns]);
-
-  const handleDecryptLayoutSelectionChange = useCallback((nextIds: string[]) => {
-    setDecryptLayoutIds(nextIds);
-    const nextFiles = decryptFiles.map(file => {
-      if (!file.isFixedWidth && decryptionFormat !== "txt") return file;
-      const layoutEntry = chooseDecryptLayout(file.fileName, layouts, nextIds);
-      if (!layoutEntry?.result) return { ...file, layoutId: "" };
-      if (!file.isFixedWidth) return { ...file, layoutId: layoutEntry.id };
-
-      const headers = layoutEntry.result.fields.map(field => field.varName);
-      const retainedColumns = file.cols.filter(column => headers.includes(column));
-      return {
-        ...file,
-        layoutId: layoutEntry.id,
-        headers,
-        cols: retainedColumns.length > 0
-          ? retainedColumns
-          : preferredColumnsForHeaders(headers, preferredDecryptionColumns),
-        encryptedPreview: fixedWidthRowsFromText(
-          file.fixedWidthPreviewText ?? "",
-          layoutEntry.result.fields,
-        ).slice(0, 500),
-      };
-    });
-    setDecryptFiles(nextFiles);
-    const common = commonColumnsForDecryptFiles(nextFiles);
-    setDecryptCommonSelectedColumns(previous => previous
-      ? previous.filter(column => common.includes(column))
-      : null);
-  }, [decryptFiles, decryptionFormat, layouts, preferredDecryptionColumns]);
 
   const handleCommonDecryptColumnsChange = useCallback((next: Set<string>) => {
     const selected = [...next];
@@ -2125,70 +2090,6 @@ export default function FWFConverter() {
           </div>
           <div className="p-6 space-y-5">
              <p className="text-sm text-gray-500">Upload encrypted CSV or fixed-width TXT files created by this tool, enter the same key settings, and select shared columns to restore in every file.</p>
-             {needsDecryptLayout && (
-               <div className="rounded-xl border border-blue-200 bg-blue-50/60 p-4 space-y-3">
-                  <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-                    <div>
-                      <p className="text-sm font-semibold text-blue-950">Layouts for fixed-width TXT files and output</p>
-                      <p className="text-xs text-blue-700 mt-1">
-                        Select one or more layouts. Multiple TXT files are matched to the selected layouts by filename; each file can be corrected below.
-                      </p>
-                    </div>
-                    {decryptLayoutOptions.length > 0 && (
-                      <div className="flex items-center gap-2 shrink-0">
-                        <button
-                          type="button"
-                          onClick={() => handleDecryptLayoutSelectionChange(decryptLayoutOptions.map(layout => layout.id))}
-                          disabled={decryptRunning || decryptLayoutIds.length === decryptLayoutOptions.length}
-                          className="rounded-lg border border-blue-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-blue-800 hover:bg-blue-100 disabled:opacity-40"
-                        >
-                          Select all
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDecryptLayoutSelectionChange([])}
-                          disabled={decryptRunning || decryptLayoutIds.length === 0}
-                          className="rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-100 disabled:opacity-40"
-                        >
-                          Clear all
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                 {decryptLayoutOptions.length > 0 ? (
-                   <div className="grid gap-2 sm:grid-cols-2">
-                     {decryptLayoutOptions.map(layout => (
-                       <label key={layout.id} className="flex items-start gap-2 rounded-lg border border-blue-100 bg-white px-3 py-2.5 text-sm text-gray-800 cursor-pointer hover:border-blue-300">
-                         <input
-                           type="checkbox"
-                           checked={decryptLayoutIds.includes(layout.id)}
-                           onChange={event => handleDecryptLayoutSelectionChange(
-                             event.target.checked
-                               ? [...decryptLayoutIds, layout.id]
-                               : decryptLayoutIds.filter(id => id !== layout.id),
-                           )}
-                           disabled={decryptRunning}
-                           className="mt-0.5 accent-blue-600"
-                         />
-                         <span className="min-w-0">
-                           <span className="block truncate font-medium">{layout.fileName}</span>
-                           {layout.result?.sheetName && (
-                             <span className="block truncate text-xs text-gray-500">{layout.result.sheetName}</span>
-                           )}
-                         </span>
-                       </label>
-                     ))}
-                   </div>
-                 ) : (
-                   <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                     Upload one or more layout files in Step 1 before selecting TXT files.
-                   </p>
-                 )}
-                 <p className="text-xs text-blue-700">
-                   Required for fixed-width TXT input or TXT output. Upload layouts in Step 1 if they are not listed.
-                 </p>
-               </div>
-             )}
             {decryptFiles.length === 0 ? (
                <DropZone accept=".csv,.txt" multiple icon={<LockOpen className="w-9 h-9 text-blue-600" />}
                  label="Drop anonymized CSV or TXT files here" sublabel="CSV and fixed-width TXT files encrypted by this tool are supported"
@@ -2340,7 +2241,7 @@ export default function FWFConverter() {
                                    className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2.5 text-sm text-black focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
                                  >
                                    <option value="">Choose a matching layout</option>
-                                   {decryptLayoutOptions.map(layout => (
+                                   {decryptAvailableLayouts.map(layout => (
                                      <option key={layout.id} value={layout.id}>
                                        {layout.fileName}{layout.result?.sheetName ? ` — ${layout.result.sheetName}` : ""}
                                      </option>
