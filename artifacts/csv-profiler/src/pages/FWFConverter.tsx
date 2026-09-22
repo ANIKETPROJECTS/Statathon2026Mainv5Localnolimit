@@ -91,6 +91,8 @@ interface DecryptFile {
   file: File;
   fileName: string;
   isFixedWidth: boolean;
+  layoutId: string;
+  fixedWidthPreviewText: string | null;
   csvText: string | null;
   headers: string[];
   cols: string[];
@@ -410,6 +412,20 @@ function scoreLayoutFileMatch(dataFileName: string, layout: LayoutEntry): number
   return overlap.length === 1 && overlap[0] !== "hces" ? 48 : 0;
 }
 
+function chooseDecryptLayout(
+  fileName: string,
+  layouts: LayoutEntry[],
+  selectedLayoutIds: string[],
+): LayoutEntry | undefined {
+  const candidates = layouts.filter(layout =>
+    selectedLayoutIds.includes(layout.id) && Boolean(layout.result)
+  );
+  if (candidates.length <= 1) return candidates[0];
+  return [...candidates].sort((left, right) =>
+    scoreLayoutFileMatch(fileName, right) - scoreLayoutFileMatch(fileName, left)
+  )[0];
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function FWFConverter() {
@@ -441,7 +457,7 @@ export default function FWFConverter() {
   const [decryptFiles, setDecryptFiles] = useState<DecryptFile[]>([]);
   const [decryptOutputDirectory, setDecryptOutputDirectory] = useState<DirectoryHandle | null>(null);
   const [decryptOutputDirectoryName, setDecryptOutputDirectoryName] = useState("");
-  const [decryptLayoutId, setDecryptLayoutId] = useState("");
+  const [decryptLayoutIds, setDecryptLayoutIds] = useState<string[]>([]);
   const [decryptCommonSelectedColumns, setDecryptCommonSelectedColumns] = useState<string[] | null>(null);
   const [collapsedDecryptFiles, setCollapsedDecryptFiles] = useState<Set<string>>(new Set());
   const [decryptRunning, setDecryptRunning] = useState(false);
@@ -459,7 +475,8 @@ export default function FWFConverter() {
   const layoutInputRef = useRef<HTMLInputElement>(null);
   const dataInputRef = useRef<HTMLInputElement>(null);
   const decryptInputRef = useRef<HTMLInputElement>(null);
-  const decryptLayout = layouts.find(layout => layout.id === decryptLayoutId)?.result ?? null;
+  const decryptLayoutOptions = layouts.filter(layout => layout.result);
+  const needsDecryptLayout = decryptionFormat === "txt" || decryptFiles.some(file => file.isFixedWidth);
 
   useEffect(() => {
     if (!defaultEncryptionFolder) return;
