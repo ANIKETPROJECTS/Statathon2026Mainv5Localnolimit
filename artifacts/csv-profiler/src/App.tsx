@@ -2,7 +2,7 @@ import { Switch, Route, Router as WouterRouter, useLocation } from "wouter";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { Shield, Info, Settings, X } from "lucide-react";
+import { Shield, Info, Settings, X, FolderOpen } from "lucide-react";
 import NotFound from "@/pages/not-found";
 import FWFConverter from "@/pages/FWFConverter";
 import InfoPage from "@/pages/Info";
@@ -10,6 +10,7 @@ import RiskAssessmentSingle from "@/pages/RiskAssessmentSingle";
 import RiskAssessmentComparison from "@/pages/RiskAssessmentComparison";
 import { EncryptionSettingsProvider, useEncryptionSettings } from "@/lib/encryption-settings-context";
 import { ColumnPreferencesProvider, useColumnPreferences } from "@/lib/column-preferences-context";
+import { OutputFolderPreferencesProvider, getFolderLabel, useOutputFolderPreferences, type FolderTarget } from "@/lib/output-folder-preferences-context";
 import { Component, useCallback, useEffect, useState, type ErrorInfo, type ReactNode } from "react";
 
 function usePackagedHashLocation(): [string, (to: string) => void] {
@@ -74,13 +75,27 @@ function AppLayout() {
     setPreferredColumns,
     setPreferredDecryptionColumns,
   } = useColumnPreferences();
+  const {
+    encryptionFolder,
+    decryptionFolder,
+    setEncryptionFolder,
+    setDecryptionFolder,
+  } = useOutputFolderPreferences();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [columnDraft, setColumnDraft] = useState("");
   const [decryptionColumnDraft, setDecryptionColumnDraft] = useState("");
+  const [encryptionFolderDraft, setEncryptionFolderDraft] = useState("");
+  const [decryptionFolderDraft, setDecryptionFolderDraft] = useState("");
+  const [encryptionFolderSelection, setEncryptionFolderSelection] = useState<FolderTarget>(null);
+  const [decryptionFolderSelection, setDecryptionFolderSelection] = useState<FolderTarget>(null);
 
   const openSettings = () => {
     setColumnDraft(preferredColumns.join("\n"));
     setDecryptionColumnDraft(preferredDecryptionColumns.join("\n"));
+    setEncryptionFolderDraft(getFolderLabel(encryptionFolder));
+    setDecryptionFolderDraft(getFolderLabel(decryptionFolder));
+    setEncryptionFolderSelection(encryptionFolder);
+    setDecryptionFolderSelection(decryptionFolder);
     setSettingsOpen(true);
   };
 
@@ -96,7 +111,56 @@ function AppLayout() {
     const decryptionColumns = parseColumnDraft(decryptionColumnDraft);
     setPreferredColumns(columns);
     setPreferredDecryptionColumns(decryptionColumns);
+    setEncryptionFolder(encryptionFolderSelection);
+    setDecryptionFolder(decryptionFolderSelection);
     setSettingsOpen(false);
+  };
+
+  const chooseDefaultFolder = async (kind: "encryption" | "decryption") => {
+    if (window.desktopAPI) {
+      const selectedPath = await window.desktopAPI.chooseOutputFolder();
+      if (selectedPath) {
+        if (kind === "encryption") {
+          setEncryptionFolderDraft(selectedPath);
+          setEncryptionFolderSelection(selectedPath);
+        } else {
+          setDecryptionFolderDraft(selectedPath);
+          setDecryptionFolderSelection(selectedPath);
+        }
+      }
+      return;
+    }
+
+    const picker = (window as Window & {
+      showDirectoryPicker?: () => Promise<{
+        name?: string;
+        requestPermission?: (options?: { mode?: "read" | "readwrite" }) => Promise<"granted" | "denied" | "prompt">;
+        getFileHandle(name: string, options?: { create?: boolean }): Promise<{
+          createWritable(): Promise<{ write(data: Blob | Uint8Array): Promise<void>; close(): Promise<void> }>;
+        }>;
+      }>;
+    }).showDirectoryPicker;
+    if (!picker) {
+      alert("Selecting a default folder requires Chrome or Edge.");
+      return;
+    }
+    try {
+      const handle = await picker();
+      const permission = await handle.requestPermission?.({ mode: "readwrite" });
+      if (permission === "denied") {
+        alert("Write permission is required to use this default folder.");
+        return;
+      }
+      if (kind === "encryption") {
+        setEncryptionFolderDraft(handle.name ?? "Selected folder");
+        setEncryptionFolderSelection(handle);
+      } else {
+        setDecryptionFolderDraft(handle.name ?? "Selected folder");
+        setDecryptionFolderSelection(handle);
+      }
+    } catch {
+      // The user cancelled the picker.
+    }
   };
 
   return (
@@ -170,7 +234,7 @@ function AppLayout() {
 
       {settingsOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 px-4" role="dialog" aria-modal="true" aria-labelledby="settings-title">
-          <div className="w-full max-w-lg rounded-2xl bg-white shadow-2xl border border-gray-200">
+          <div className="w-full max-w-2xl rounded-2xl bg-white shadow-2xl border border-gray-200">
             <div className="flex items-center justify-between px-6 py-5 border-b border-gray-100">
               <div>
                 <h2 id="settings-title" className="text-lg font-semibold text-black">Settings</h2>
@@ -212,6 +276,68 @@ function AppLayout() {
                   <p className="text-xs text-gray-500">
                     These columns are automatically selected in every newly added encrypted CSV.
                   </p>
+                </div>
+                <div className="border-t border-gray-100 pt-5 space-y-4">
+                  <div>
+                    <p className="text-sm font-semibold text-gray-800">Default output folders</p>
+                    <p className="text-xs text-gray-500 mt-1">Optional folders used automatically when no folder is chosen manually.</p>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <label htmlFor="default-encryption-folder" className="text-sm font-semibold text-gray-800">
+                        Default encryption folder
+                      </label>
+                      <div className="flex gap-2">
+                        <input
+                          id="default-encryption-folder"
+                          value={encryptionFolderDraft}
+                          readOnly
+                          placeholder="No default selected"
+                          className="min-w-0 flex-1 rounded-xl border border-gray-300 px-3 py-2.5 text-sm text-black bg-gray-50"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => void chooseDefaultFolder("encryption")}
+                          className="flex items-center gap-1.5 rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm font-semibold text-gray-700 hover:border-blue-400 hover:text-blue-700 transition-colors"
+                        >
+                          <FolderOpen className="w-4 h-4" />Choose
+                        </button>
+                      </div>
+                      {encryptionFolderDraft && (
+                        <button type="button" onClick={() => { setEncryptionFolderDraft(""); setEncryptionFolderSelection(null); }}
+                          className="text-xs text-gray-500 hover:text-red-600 transition-colors">
+                          Clear default encryption folder
+                        </button>
+                      )}
+                    </div>
+                    <div className="space-y-2">
+                      <label htmlFor="default-decryption-folder" className="text-sm font-semibold text-gray-800">
+                        Default decryption folder
+                      </label>
+                      <div className="flex gap-2">
+                        <input
+                          id="default-decryption-folder"
+                          value={decryptionFolderDraft}
+                          readOnly
+                          placeholder="No default selected"
+                          className="min-w-0 flex-1 rounded-xl border border-gray-300 px-3 py-2.5 text-sm text-black bg-gray-50"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => void chooseDefaultFolder("decryption")}
+                          className="flex items-center gap-1.5 rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm font-semibold text-gray-700 hover:border-blue-400 hover:text-blue-700 transition-colors"
+                        >
+                          <FolderOpen className="w-4 h-4" />Choose
+                        </button>
+                      </div>
+                      {decryptionFolderDraft && (
+                        <button type="button" onClick={() => { setDecryptionFolderDraft(""); setDecryptionFolderSelection(null); }}
+                          className="text-xs text-gray-500 hover:text-red-600 transition-colors">
+                          Clear default decryption folder
+                        </button>
+                      )}
+                    </div>
+                  </div>
                 </div>
                 <p className="text-xs text-gray-500">
                   Enter one name per line or separate names with commas. Matching ignores capitalization, spaces, hyphens, and underscores.
@@ -286,14 +412,16 @@ function App() {
       <TooltipProvider>
         <EncryptionSettingsProvider>
           <ColumnPreferencesProvider>
-            <AppErrorBoundary>
-              <WouterRouter
-                base={routerBase}
-                hook={isPackagedDesktop ? usePackagedHashLocation : undefined}
-              >
-                <AppLayout />
-              </WouterRouter>
-            </AppErrorBoundary>
+            <OutputFolderPreferencesProvider>
+              <AppErrorBoundary>
+                <WouterRouter
+                  base={routerBase}
+                  hook={isPackagedDesktop ? usePackagedHashLocation : undefined}
+                >
+                  <AppLayout />
+                </WouterRouter>
+              </AppErrorBoundary>
+            </OutputFolderPreferencesProvider>
             <Toaster />
           </ColumnPreferencesProvider>
         </EncryptionSettingsProvider>
