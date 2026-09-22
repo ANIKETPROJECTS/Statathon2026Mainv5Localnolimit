@@ -374,9 +374,42 @@ function matchTokens(value: string): string[] {
 }
 
 function extractExplicitLayoutFileNames(value: string): string[] {
-  return [...value.matchAll(/file\s*name\s*[:\-]\s*["']?([^"',;|]+)/gi)]
+  const labelled = [...value.matchAll(/file\s*name\s*[:\-]\s*["']?([^"',;|]+)/gi)]
     .map(match => match[1].trim().replace(/[.)]+$/, ""))
     .filter(Boolean);
+  const txtNames = value.match(/\b[a-z0-9][a-z0-9_-]*\.txt\b/gi) ?? [];
+  return [...new Set([...labelled, ...txtNames])];
+}
+
+function normalizeLayoutFileIdentity(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/\.[a-z0-9]+$/i, "")
+    // The survey year and encryption suffix do not identify the layout.
+    .replace(/hces\d{2,4}/g, "")
+    .replace(/(?:anonymized|encrypted|decrypted|original)/g, "")
+    // Treat the source naming variants lv_01, level-01 and v01 alike.
+    .replace(/(?:level|lv)[\s._-]*(\d{1,3})/g, "v$1")
+    // Layouts commonly use m1_v01 while data files use lv_01.
+    .replace(/m\d+[\s._-]*v(\d{1,3})/g, "v$1")
+    .replace(/[^a-z0-9]/g, "");
+}
+
+function longestCommonSubstringLength(left: string, right: string): number {
+  if (!left || !right) return 0;
+  let previous = Array.from({ length: right.length + 1 }, () => 0);
+  let longest = 0;
+  for (const leftChar of left) {
+    const current = Array.from({ length: right.length + 1 }, () => 0);
+    for (let index = 1; index <= right.length; index++) {
+      if (leftChar === right[index - 1]) {
+        current[index] = previous[index - 1] + 1;
+        longest = Math.max(longest, current[index]);
+      }
+    }
+    previous = current;
+  }
+  return longest;
 }
 
 function extractLevelNumber(value: string): string | null {
@@ -394,6 +427,7 @@ function extractFileVersion(value: string): string | null {
 
 function scoreLayoutFileMatch(dataFileName: string, layout: LayoutEntry): number {
   const dataStem = normalizeMatchStem(dataFileName);
+  const dataIdentity = normalizeLayoutFileIdentity(dataFileName);
   const dataLevel = extractLevelNumber(dataFileName);
   const dataVersion = extractFileVersion(dataFileName);
   const sourceText = `${layout.fileName} ${layout.result?.sheetName ?? ""}`;
@@ -401,14 +435,29 @@ function scoreLayoutFileMatch(dataFileName: string, layout: LayoutEntry): number
 
   for (const explicitName of explicitNames) {
     const explicitStem = normalizeMatchStem(explicitName);
+    const explicitIdentity = normalizeLayoutFileIdentity(explicitName);
+    if (explicitIdentity && explicitIdentity === dataIdentity) return 120;
     if (explicitStem === dataStem) return 100;
     if (explicitStem.length >= 6 && (explicitStem.includes(dataStem) || dataStem.includes(explicitStem))) return 92;
     if (dataVersion && extractFileVersion(explicitName) === dataVersion) return 96;
   }
 
   const layoutStem = normalizeMatchStem(layout.fileName);
+  const layoutIdentity = normalizeLayoutFileIdentity(layout.fileName);
+  if (layoutIdentity && layoutIdentity === dataIdentity) return 90;
   if (layoutStem === dataStem) return 88;
   if (layoutStem.length >= 6 && (layoutStem.includes(dataStem) || dataStem.includes(layoutStem))) return 70;
+
+  const commonNameFragment = Math.max(
+    ...explicitNames.map(explicitName =>
+      longestCommonSubstringLength(
+        normalizeLayoutFileIdentity(explicitName),
+        dataIdentity,
+      )
+    ),
+    0,
+  );
+  if (commonNameFragment >= 4) return Math.min(86, 50 + commonNameFragment * 6);
 
   const layoutLevel = extractLevelNumber(sourceText);
   if (dataLevel && layoutLevel && dataLevel === layoutLevel) return 78;
