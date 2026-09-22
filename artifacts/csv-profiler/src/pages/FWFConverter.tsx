@@ -393,7 +393,7 @@ export default function FWFConverter() {
       showDirectoryPicker?: () => Promise<DirectoryHandle>;
     }).showDirectoryPicker;
     if (!picker) {
-      alert("Folder output requires Chrome or Edge. Downloads will be used instead.");
+      alert("Selecting a decryption output folder requires Chrome or Edge.");
       return null;
     }
     try {
@@ -1545,10 +1545,12 @@ export default function FWFConverter() {
                 <p className="text-sm text-gray-500 mt-0.5">Key settings apply to all files below</p>
               </div>
             </div>
-            <button onClick={chooseOutputDirectory}
+            <button onClick={anonMode === "decrypt" ? chooseDecryptOutputDirectory : chooseOutputDirectory}
               className="flex items-center gap-2 px-3 py-2 rounded-lg border border-emerald-300 bg-white text-sm font-semibold text-emerald-700 hover:bg-emerald-100 transition-colors">
               <Download className="w-4 h-4" />
-              {outputDirectoryName || "Choose output folder"}
+              {anonMode === "decrypt"
+                ? decryptOutputDirectoryName || "Choose decryption output folder"
+                : outputDirectoryName || "Choose output folder"}
             </button>
             <div className="flex items-center rounded-xl border border-emerald-200 overflow-hidden text-sm font-semibold flex-shrink-0 bg-white">
               {(["encrypt", "decrypt"] as const).map(m => (
@@ -1901,11 +1903,22 @@ export default function FWFConverter() {
 
                  {decryptFiles.length > 0 && (
                    <div className="border border-blue-200 bg-blue-50 rounded-xl p-5 space-y-3">
-                     <div>
-                       <p className="text-sm font-semibold text-blue-950">Batch decryption</p>
-                       <p className="text-xs text-blue-700 mt-1">
-                         Process all {decryptFiles.length} selected file{decryptFiles.length !== 1 ? "s" : ""} using their current column selections.
-                       </p>
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-semibold text-blue-950">Batch decryption</p>
+                          <p className="text-xs text-blue-700 mt-1">
+                            Process all {decryptFiles.length} selected file{decryptFiles.length !== 1 ? "s" : ""} using their current column selections.
+                          </p>
+                        </div>
+                        <button
+                          onClick={handleDecrypt}
+                          disabled={decryptRunning || decryptFiles.some(file => file.cols.length === 0)}
+                          className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors whitespace-nowrap"
+                        >
+                          {decryptRunning
+                            ? <><Spin />Decrypting all files…</>
+                            : <><LockOpen className="w-4 h-4" />Decrypt all files</>}
+                        </button>
                      </div>
                      <ProgressBar
                        pct={decryptOverallProgress}
@@ -1977,14 +1990,6 @@ export default function FWFConverter() {
               </div>
             )}
             {decryptError && <ErrorBox message={decryptError} />}
-            {decryptFiles.length > 0 && (
-              <button onClick={handleDecrypt} disabled={decryptRunning || decryptFiles.some(file => file.cols.length === 0)}
-                className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-black text-white text-base font-semibold hover:bg-gray-800 disabled:opacity-50 transition-colors">
-                {decryptRunning
-                  ? <><Spin />Decrypting {decryptFiles.length} file{decryptFiles.length !== 1 ? "s" : ""}…</>
-                  : <><LockOpen className="w-4 h-4" />Apply 4-round FPE decryption to all files</>}
-              </button>
-            )}
             {decryptCompletedCount > 0 && !decryptRunning && (
               <SuccessBadge text={`${decryptCompletedCount} file${decryptCompletedCount !== 1 ? "s" : ""} decrypted — original values restored`} />
             )}
