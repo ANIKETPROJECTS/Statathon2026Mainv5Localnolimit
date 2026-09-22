@@ -102,6 +102,7 @@ interface DecryptFile {
   progress: number;
   blob: Blob | null;
   outputSaved: boolean;
+  outputDestination: "folder" | "download" | null;
   outputName: string;
   error: string;
 }
@@ -256,6 +257,17 @@ function triggerDownload(blob: Blob, name: string) {
   const a = document.createElement("a");
   a.href = url; a.download = name; a.click();
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
+async function ensureDirectoryWritePermission(directory: DirectoryHandle): Promise<boolean> {
+  try {
+    const current = await directory.queryPermission?.({ mode: "readwrite" });
+    if (current === "granted") return true;
+    const requested = await directory.requestPermission?.({ mode: "readwrite" });
+    return requested === undefined || requested === "granted";
+  } catch {
+    return false;
+  }
 }
 
 function patchLayout(
@@ -644,7 +656,7 @@ export default function FWFConverter() {
     stream: ReadableStream<Uint8Array>,
     name: string,
     targetOverride?: DirectoryHandle | string | null,
-  ) => {
+  ): Promise<"folder" | "download"> => {
     const desktop = window.desktopAPI;
     const desktopFolder = typeof targetOverride === "string" ? targetOverride : outputDirectoryName;
     if (desktop && desktopFolder) {
@@ -662,16 +674,32 @@ export default function FWFConverter() {
       } finally {
         reader.releaseLock();
       }
-      return;
+      return "folder";
     }
 
     let writable: { write(data: Blob | Uint8Array): Promise<void>; close(): Promise<void> } | null = null;
+    let useDownloadFallback = false;
     const browserDirectory = targetOverride && typeof targetOverride !== "string"
       ? targetOverride
       : outputDirectory;
     if (browserDirectory) {
-      const fileHandle = await browserDirectory.getFileHandle(name, { create: true });
-      writable = await fileHandle.createWritable();
+      try {
+        if (!await ensureDirectoryWritePermission(browserDirectory)) {
+          useDownloadFallback = true;
+        } else {
+          const fileHandle = await browserDirectory.getFileHandle(name, { create: true });
+          writable = await fileHandle.createWritable();
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const permissionError = error instanceof DOMException
+          ? error.name === "NotAllowedError" || error.name === "SecurityError"
+          : /not allowed|permission|current context/i.test(message);
+        if (!permissionError) throw error;
+        // Replit previews and some browser contexts reject a directory handle
+        // after the picker has returned it. Download the completed stream instead.
+        useDownloadFallback = true;
+      }
     } else if (window.showSaveFilePicker) {
       const isTxt = /\.txt$/i.test(name);
       const fileHandle = await window.showSaveFilePicker({
@@ -696,7 +724,7 @@ export default function FWFConverter() {
       } finally {
         reader.releaseLock();
       }
-      return;
+      return browserDirectory && !useDownloadFallback ? "folder" : "download";
     }
 
     // Older browsers cannot stream to a download target. Keep this fallback
@@ -716,6 +744,7 @@ export default function FWFConverter() {
       chunks.map(chunk => chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength) as ArrayBuffer),
       { type: /\.txt$/i.test(name) ? "text/plain;charset=utf-8;" : "text/csv;charset=utf-8;" },
     ), name);
+    return "download";
   }, [outputDirectory, outputDirectoryName]);
 
   // ── Layout handlers ──────────────────────────────────────────────────────
@@ -1354,6 +1383,7 @@ export default function FWFConverter() {
           progress: 0,
           blob: null,
           outputSaved: false,
+           outputDestination: null,
           outputName: "",
           error: "",
         } satisfies DecryptFile;
@@ -1377,6 +1407,7 @@ export default function FWFConverter() {
         progress: 0,
         blob: null,
         outputSaved: false,
+         outputDestination: null,
         outputName: "",
         error: "",
       } satisfies DecryptFile;
@@ -1530,10 +1561,11 @@ export default function FWFConverter() {
           );
           const outputBaseName = entry.fileName.replace(/\.[^.]+$/, "");
           const outputName = formatOutputName(outputBaseName, "_decrypted", decryptionFormat);
-          await saveOutputStream(fixedWidthResult.stream, outputName, streamTarget);
+           const outputDestination = await saveOutputStream(fixedWidthResult.stream, outputName, streamTarget);
           patchDecryptFile(setDecryptFiles, entry.id, {
             decryptedPreview: fixedWidthResult.previewRows.slice(0, 500),
             outputSaved: true,
+             outputDestination,
             outputName,
             running: false,
             progress: 100,
@@ -1552,10 +1584,11 @@ export default function FWFConverter() {
           const outputStream = decryptionFormat === "txt"
             ? fixedWidthStreamFromCSV(stream, entryLayout!.fields)
             : stream;
-          await saveOutputStream(outputStream, outputName, streamTarget);
+           const outputDestination = await saveOutputStream(outputStream, outputName, streamTarget);
           patchDecryptFile(setDecryptFiles, entry.id, {
             decryptedPreview: previewRows.slice(0, 500),
             outputSaved: true,
+             outputDestination,
             outputName,
             running: false,
             progress: 100,
@@ -1573,10 +1606,11 @@ export default function FWFConverter() {
           const outputBlob = decryptionFormat === "txt"
             ? new Blob([fixedWidthTextFromCSV(csvText, entryLayout!.fields)], { type: "text/plain;charset=utf-8;" })
             : new Blob([csvText], { type: "text/csv;charset=utf-8;" });
-          await saveOutputStream(outputBlob.stream(), outputName, streamTarget);
+           const outputDestination = await saveOutputStream(outputBlob.stream(), outputName, streamTarget);
           patchDecryptFile(setDecryptFiles, entry.id, {
             decryptedPreview: parseExportCSV(csvText).rows.slice(0, 500),
             outputSaved: true,
+             outputDestination,
             outputName,
             running: false,
             progress: 100,
@@ -2320,7 +2354,8 @@ export default function FWFConverter() {
                             {file.error && <ErrorBox message={file.error} />}
                             {file.outputSaved && (
                               <p className="text-xs text-emerald-700">
-                                Saved to output folder as <strong>{file.outputName}</strong>.
+                                {file.outputDestination === "folder" ? "Saved to output folder as" : "Downloaded as"}{" "}
+                                <strong>{file.outputName}</strong>.
                               </p>
                             )}
                           </div>
