@@ -1312,6 +1312,8 @@ export default function FWFConverter() {
       anonymizedFileCount + inProgressContribution
     ) / activatedFiles.length * 100))
     : 0;
+  const completedEncryptionFiles = activatedFiles.filter(df => df.step === "anon-done" && df.encResultKey);
+  const sharedEncryptionKey = completedEncryptionFiles[0]?.encResultKey ?? null;
   const overallAnonymizationLabel = anonymizedFileCount === activatedFiles.length
     ? `All ${activatedFiles.length} files anonymized`
     : anonymizingFiles.length > 0
@@ -1592,8 +1594,48 @@ export default function FWFConverter() {
         </div>
       )}
 
+      {anonMode === "encrypt" && sharedEncryptionKey && (
+        <div className="border-l-4 border-amber-400 bg-amber-50 rounded-r-xl p-5 space-y-3 mb-6">
+          <p className="text-sm font-semibold text-amber-800 flex items-center gap-2">
+            <Key className="w-4 h-4" />Symmetric Key — save to decrypt all encrypted files
+          </p>
+          <div className="font-mono text-xs bg-white rounded-lg px-4 py-3 break-all select-all cursor-text leading-relaxed text-black border border-amber-200">
+            {sharedEncryptionKey}
+          </div>
+          <div className="flex flex-wrap gap-2 items-center">
+            <span className="text-sm text-amber-700 flex-1 min-w-0">
+              4-round FPE · {keyModeLabel} · det. {anonDeterministic ? "ON" : "OFF"} · applies to {completedEncryptionFiles.length} encrypted file{completedEncryptionFiles.length !== 1 ? "s" : ""}
+            </span>
+            <button onClick={() => navigator.clipboard.writeText(sharedEncryptionKey)}
+              className="text-sm px-3 py-1.5 rounded-lg border border-amber-300 text-amber-800 hover:bg-amber-100 transition-colors font-medium">
+              Copy key
+            </button>
+            <button onClick={() => {
+              const fileNames = completedEncryptionFiles.map(file => file.fileName).join(", ");
+              const txt = [
+                "AIRAVATA DEA FPE Key Material",
+                "=".repeat(40),
+                "",
+                `Key (256-bit hex): ${sharedEncryptionKey}`,
+                "",
+                `Key derivation: ${keyModeLabel}`,
+                `Deterministic mode: ${anonDeterministic ? "ON" : "OFF"}`,
+                `Files: ${fileNames}`,
+                `Generated: ${new Date().toISOString()}`,
+                "",
+                "IMPORTANT — Store this key material securely. It is required to decrypt.",
+              ].join("\n");
+              triggerDownload(new Blob([txt], { type: "text/plain" }), "key_airavata_dea.txt");
+            }} className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg border border-amber-300 text-amber-800 hover:bg-amber-100 transition-colors font-medium">
+              <Download className="w-3.5 h-3.5" />Download key
+            </button>
+          </div>
+          <p className="text-sm text-amber-700">⚠ Same key decrypts all encrypted files. Store securely — never log or share.</p>
+        </div>
+      )}
+
       {/* ── Per-file processing cards ─────────────────────────────────────── */}
-      {activatedFiles.length > 1 && (
+      {anonMode === "encrypt" && activatedFiles.length > 1 && (
         <div className="flex justify-end">
           <button
             onClick={() => setCollapsedAnonFiles(prev => {
@@ -1612,7 +1654,7 @@ export default function FWFConverter() {
           </button>
         </div>
       )}
-      {activatedFiles.map(df => {
+      {anonMode === "encrypt" && activatedFiles.map(df => {
         const lo = layouts.find(l => l.id === df.layoutId);
         if (!lo?.result) return null;
         const fields = lo.result.fields;
@@ -1679,23 +1721,6 @@ export default function FWFConverter() {
                             Large-file mode wrote the anonymized CSV directly to <strong>{df.encOutputName}</strong>. The source file was processed in chunks without loading it into memory.
                           </div>
                         )}
-
-                        <div className="border-l-4 border-amber-400 bg-amber-50 rounded-r-xl p-5 space-y-3">
-                          <p className="text-sm font-semibold text-amber-800 flex items-center gap-2"><Key className="w-4 h-4" />Symmetric Key — save to decrypt later</p>
-                          <div className="font-mono text-xs bg-white rounded-lg px-4 py-3 break-all select-all cursor-text leading-relaxed text-black border border-amber-200">{df.encResultKey}</div>
-                          <div className="flex flex-wrap gap-2 items-center">
-                            <span className="text-sm text-amber-700 flex-1 min-w-0">4-round FPE · {keyModeLabel} · det. {anonDeterministic ? "ON" : "OFF"}</span>
-                            <button onClick={() => navigator.clipboard.writeText(df.encResultKey!)}
-                              className="text-sm px-3 py-1.5 rounded-lg border border-amber-300 text-amber-800 hover:bg-amber-100 transition-colors font-medium">Copy key</button>
-                            <button onClick={() => {
-                              const txt = ["AIRAVATA DEA FPE Key Material", "=".repeat(40), "", `Key (256-bit hex): ${df.encResultKey}`, "", `Key derivation: ${keyModeLabel}`, `Deterministic mode: ${anonDeterministic ? "ON" : "OFF"}`, `File: ${df.fileName}`, `Generated: ${new Date().toISOString()}`, "", "IMPORTANT — Store this key material securely. It is required to decrypt."].join("\n");
-                              triggerDownload(new Blob([txt], { type: "text/plain" }), `key_${df.outputBaseName}.txt`);
-                            }} className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg border border-amber-300 text-amber-800 hover:bg-amber-100 transition-colors font-medium">
-                              <Download className="w-3.5 h-3.5" />Download key
-                            </button>
-                          </div>
-                          <p className="text-sm text-amber-700">⚠ Same key decrypts. Store securely — never log or share.</p>
-                        </div>
 
                          {/* Format download panel — available when the result is retained in memory. */}
                          {df.encResultBlob && <div className="border border-gray-200 rounded-xl overflow-hidden">
