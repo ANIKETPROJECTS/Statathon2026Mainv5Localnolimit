@@ -352,6 +352,8 @@ export default function FWFConverter() {
 
   // Global decrypt panel
   const [decryptFiles, setDecryptFiles] = useState<DecryptFile[]>([]);
+  const [decryptOutputDirectory, setDecryptOutputDirectory] = useState<DirectoryHandle | null>(null);
+  const [decryptOutputDirectoryName, setDecryptOutputDirectoryName] = useState("");
   const [decryptCommonSelectedColumns, setDecryptCommonSelectedColumns] = useState<string[] | null>(null);
   const [collapsedDecryptFiles, setCollapsedDecryptFiles] = useState<Set<string>>(new Set());
   const [decryptRunning, setDecryptRunning] = useState(false);
@@ -403,6 +405,38 @@ export default function FWFConverter() {
       }
       setOutputDirectory(handle);
       setOutputDirectoryName("Selected output folder");
+      return handle;
+    } catch {
+      // The user cancelled the picker.
+      return null;
+    }
+  }, []);
+
+  const chooseDecryptOutputDirectory = useCallback(async (): Promise<DirectoryHandle | null> => {
+    if (window.desktopAPI) {
+      const selectedPath = await window.desktopAPI.chooseOutputFolder();
+      if (selectedPath) {
+        setDecryptOutputDirectoryName(selectedPath);
+        setDecryptOutputDirectory(null);
+      }
+      return null;
+    }
+    const picker = (window as Window & {
+      showDirectoryPicker?: () => Promise<DirectoryHandle>;
+    }).showDirectoryPicker;
+    if (!picker) {
+      alert("Folder output requires Chrome or Edge. Downloads will be used instead.");
+      return null;
+    }
+    try {
+      const handle = await picker();
+      const permission = await handle.requestPermission?.({ mode: "readwrite" });
+      if (permission === "denied") {
+        alert("Write permission is required to save decrypted files in the selected folder.");
+        return null;
+      }
+      setDecryptOutputDirectory(handle);
+      setDecryptOutputDirectoryName("Selected decryption folder");
       return handle;
     } catch {
       // The user cancelled the picker.
@@ -993,16 +1027,16 @@ export default function FWFConverter() {
     }
 
     let streamTarget: DirectoryHandle | string | null =
-      outputDirectory ?? (outputDirectoryName || null);
+      decryptOutputDirectory ?? (decryptOutputDirectoryName || null);
     if (!streamTarget) {
       if (window.desktopAPI) {
         const selectedPath = await window.desktopAPI.chooseOutputFolder();
         if (selectedPath) {
-          setOutputDirectoryName(selectedPath);
+          setDecryptOutputDirectoryName(selectedPath);
           streamTarget = selectedPath;
         }
       } else {
-        streamTarget = await chooseOutputDirectory();
+        streamTarget = await chooseDecryptOutputDirectory();
       }
       if (!streamTarget) {
         setDataFiles(prev => prev.map(df => df.streaming && df.activated
@@ -1257,7 +1291,7 @@ export default function FWFConverter() {
 
     await Promise.all(decryptFiles.map(decryptOne));
     setDecryptRunning(false);
-  }, [decryptFiles, outputDirectory, outputDirectoryName, chooseOutputDirectory, saveOutputStream, anonKeyMode, anonSeeds, anonPassphrase, anonPbkdf2Iter, anonDeterministic, anonAlphanumeric, anonKeyHexInput]);
+  }, [decryptFiles, decryptOutputDirectory, decryptOutputDirectoryName, chooseDecryptOutputDirectory, saveOutputStream, anonKeyMode, anonSeeds, anonPassphrase, anonPbkdf2Iter, anonDeterministic, anonAlphanumeric, anonKeyHexInput]);
 
   const handleOpenDecryptCompare = useCallback(async (fileId: string) => {
     const decryptFile = decryptFiles.find(file => file.id === fileId);
