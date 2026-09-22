@@ -3,3 +3,4 @@
 - [Deterministic encryption nonces](deterministic-encryption-nonces.md) — decryption must reproduce the nonce from file-visible state; a plaintext-derived nonce cannot be recovered from ciphertext.
 - [Streaming encryption performance](streaming-encryption-performance.md) — precompute deterministic column transforms and throttle progress updates; never derive keys per record.
 - [NISTIR 8053 scope](nistir-8053-scope.md) — NISTIR 8053 gives de-identification context, not one mandated algorithm, risk formula, threshold, or zero-risk guarantee.
+- [Browser directory handle fallback](browser-directory-handle-fallback.md) — proxied/browser contexts can reject directory writes after async processing; fall back to a download.
