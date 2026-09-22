@@ -457,7 +457,6 @@ export default function FWFConverter() {
   const [decryptFiles, setDecryptFiles] = useState<DecryptFile[]>([]);
   const [decryptOutputDirectory, setDecryptOutputDirectory] = useState<DirectoryHandle | null>(null);
   const [decryptOutputDirectoryName, setDecryptOutputDirectoryName] = useState("");
-  const [decryptLayoutIds, setDecryptLayoutIds] = useState<string[]>([]);
   const [decryptCommonSelectedColumns, setDecryptCommonSelectedColumns] = useState<string[] | null>(null);
   const [collapsedDecryptFiles, setCollapsedDecryptFiles] = useState<Set<string>>(new Set());
   const [decryptRunning, setDecryptRunning] = useState(false);
@@ -475,8 +474,7 @@ export default function FWFConverter() {
   const layoutInputRef = useRef<HTMLInputElement>(null);
   const dataInputRef = useRef<HTMLInputElement>(null);
   const decryptInputRef = useRef<HTMLInputElement>(null);
-  const decryptLayoutOptions = layouts.filter(layout => layout.result);
-  const needsDecryptLayout = decryptionFormat === "txt" || decryptFiles.some(file => file.isFixedWidth);
+  const decryptAvailableLayouts = layouts.filter(layout => layout.result);
 
   useEffect(() => {
     if (!defaultEncryptionFolder) return;
