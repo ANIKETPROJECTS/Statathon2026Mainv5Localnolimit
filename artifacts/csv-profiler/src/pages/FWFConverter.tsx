@@ -2415,6 +2415,23 @@ function KeySettings({ keyMode, setKeyMode, seeds, setSeeds, passphrase, setPass
     setSeeds(next);
   };
 
+  const randomizeSeeds = () => {
+    const values = new Set<number>();
+    const randomValues = new Uint32Array(4);
+    if (globalThis.crypto?.getRandomValues) {
+      globalThis.crypto.getRandomValues(randomValues);
+      randomValues.forEach(value => values.add(Math.max(1, value % 2_147_483_647)));
+    } else {
+      while (values.size < 4) {
+        values.add(Math.floor(Math.random() * 2_147_483_646) + 1);
+      }
+    }
+    while (values.size < 4) {
+      values.add(Math.floor(Math.random() * 2_147_483_646) + 1);
+    }
+    setSeeds([...values]);
+  };
+
   const SEED_LABELS = ["Seed 1", "Seed 2", "Seed 3", "Seed 4"];
 
   return (
@@ -2496,10 +2513,18 @@ function KeySettings({ keyMode, setKeyMode, seeds, setSeeds, passphrase, setPass
       {/* 4 seed inputs — shown when keyMode === "random" */}
       {keyMode === "random" && (
         <div className="border border-blue-100 rounded-xl bg-blue-50/40 p-4 space-y-3">
-          <div className="flex items-center gap-2 mb-1">
+          <div className="flex flex-wrap items-center gap-2 mb-1">
             <Key className="w-3.5 h-3.5 text-blue-600" />
             <p className="text-xs font-semibold text-blue-800 uppercase tracking-wide">4-Round Encryption Chain</p>
-            <span className="text-xs text-blue-500 ml-1">Value jumps: original → round 1 → round 2 → round 3 → round 4 = encrypted</span>
+            <span className="text-xs text-blue-500 ml-1 flex-1 min-w-[220px]">Value jumps: original → round 1 → round 2 → round 3 → round 4 = encrypted</span>
+            <button
+              type="button"
+              onClick={randomizeSeeds}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-blue-300 bg-white text-xs font-semibold text-blue-800 hover:bg-blue-100 transition-colors whitespace-nowrap"
+              title="Generate four new random encryption seeds"
+            >
+              <Shuffle className="w-3.5 h-3.5" />Randomize seeds
+            </button>
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             {SEED_LABELS.map((label, i) => (
