@@ -2,3 +2,4 @@
 - [Multi-table layout workbooks](multi-table-layout-workbooks.md) — level-based fixed-width layouts may share a Common-ID byte range that must expand to base fields.
 - [Deterministic encryption nonces](deterministic-encryption-nonces.md) — decryption must reproduce the nonce from file-visible state; a plaintext-derived nonce cannot be recovered from ciphertext.
 - [Streaming encryption performance](streaming-encryption-performance.md) — precompute deterministic column transforms and throttle progress updates; never derive keys per record.
+- [NISTIR 8053 scope](nistir-8053-scope.md) — NISTIR 8053 gives de-identification context, not one mandated algorithm, risk formula, threshold, or zero-risk guarantee.
