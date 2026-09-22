@@ -1779,12 +1779,8 @@ export default function FWFConverter() {
                           })}
                          </div>}
 
-                        <div className="flex flex-col sm:flex-row gap-3">
-                         {(df.encResultBlob || df.encPreview.length > 0) && <button onClick={() => handleOpenCompare(df.id)}
-                            className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 border-emerald-500 text-emerald-700 text-sm font-semibold hover:bg-emerald-50 transition-colors">
-                            <Columns2 className="w-4 h-4" />View side by side
-                           </button>}
-                          <button onClick={() => handleDownloadOriginal(df.id)} disabled={df.origDownloading}
+                         <div className="flex flex-col sm:flex-row gap-3">
+                           <button onClick={() => handleDownloadOriginal(df.id)} disabled={df.origDownloading}
                             className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl border border-gray-200 text-sm text-gray-500 hover:text-black hover:border-gray-400 disabled:opacity-50 transition-colors">
                             <Download className="w-4 h-4" />Download original CSV
                           </button>
@@ -1808,6 +1804,21 @@ export default function FWFConverter() {
           </div>
         );
       })}
+
+      {anonMode === "encrypt" && activatedFiles.some(df =>
+        df.step === "anon-done" && (df.encResultBlob || df.encPreview.length > 0)
+      ) && (
+        <div className="space-y-2 mb-6">
+          {activatedFiles
+            .filter(df => df.step === "anon-done" && (df.encResultBlob || df.encPreview.length > 0))
+            .map(df => (
+              <button key={df.id} onClick={() => handleOpenCompare(df.id)}
+                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border-2 border-emerald-500 text-emerald-700 text-sm font-semibold hover:bg-emerald-50 transition-colors">
+                <Columns2 className="w-4 h-4" />View {df.fileName} side by side
+              </button>
+            ))}
+        </div>
+      )}
 
       {anonMode === "decrypt" && (
         <div className="border border-blue-200 rounded-2xl overflow-hidden">
