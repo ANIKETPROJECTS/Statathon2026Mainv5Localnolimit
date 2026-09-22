@@ -419,7 +419,7 @@ export default function FWFConverter() {
       showDirectoryPicker?: () => Promise<DirectoryHandle>;
     }).showDirectoryPicker;
     if (!picker) {
-      alert("Selecting a decryption output folder requires Chrome or Edge.");
+      alert("Selecting an encryption output folder requires Chrome or Edge.");
       return null;
     }
     try {
@@ -1053,16 +1053,16 @@ export default function FWFConverter() {
     }
 
     let streamTarget: DirectoryHandle | string | null =
-      decryptOutputDirectory ?? (decryptOutputDirectoryName || null);
+      outputDirectory ?? (outputDirectoryName || null);
     if (!streamTarget) {
       if (window.desktopAPI) {
         const selectedPath = await window.desktopAPI.chooseOutputFolder();
         if (selectedPath) {
-          setDecryptOutputDirectoryName(selectedPath);
+          setOutputDirectoryName(selectedPath);
           streamTarget = selectedPath;
         }
       } else {
-        streamTarget = await chooseDecryptOutputDirectory();
+        streamTarget = await chooseOutputDirectory();
       }
       if (!streamTarget) {
         setDataFiles(prev => prev.map(df => df.streaming && df.activated
@@ -1243,20 +1243,20 @@ export default function FWFConverter() {
     setDecryptError("");
 
     let streamTarget: DirectoryHandle | string | null =
-      outputDirectory ?? (outputDirectoryName || null);
+      decryptOutputDirectory ?? (decryptOutputDirectoryName || null);
     if (!streamTarget) {
       if (window.desktopAPI) {
         const selectedPath = await window.desktopAPI.chooseOutputFolder();
         if (selectedPath) {
-          setOutputDirectoryName(selectedPath);
+          setDecryptOutputDirectoryName(selectedPath);
           streamTarget = selectedPath;
         }
       } else {
-        streamTarget = await chooseOutputDirectory();
+        streamTarget = await chooseDecryptOutputDirectory();
       }
     }
     if (!streamTarget) {
-      setDecryptError("Choose an output folder before decrypting files.");
+      setDecryptError("Choose a decryption output folder before decrypting files.");
       setDecryptRunning(false);
       return;
     }

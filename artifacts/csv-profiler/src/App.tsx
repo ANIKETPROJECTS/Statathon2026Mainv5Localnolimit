@@ -234,7 +234,7 @@ function AppLayout() {
 
       {settingsOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 px-4" role="dialog" aria-modal="true" aria-labelledby="settings-title">
-          <div className="w-full max-w-2xl rounded-2xl bg-white shadow-2xl border border-gray-200">
+          <div className="w-full max-w-5xl rounded-2xl bg-white shadow-2xl border border-gray-200">
             <div className="flex items-center justify-between px-6 py-5 border-b border-gray-100">
               <div>
                 <h2 id="settings-title" className="text-lg font-semibold text-black">Settings</h2>
@@ -244,45 +244,52 @@ function AppLayout() {
                 <X className="w-5 h-5" />
               </button>
             </div>
-              <div className="p-6 space-y-5">
-                <div className="space-y-3">
-                  <label htmlFor="preferred-columns" className="text-sm font-semibold text-gray-800">
-                    Preferred encryption column names
-                  </label>
-                  <textarea
-                    id="preferred-columns"
-                    value={columnDraft}
-                    onChange={event => setColumnDraft(event.target.value)}
-                    placeholder={"survey_name\nfsu_serial_no\nstate"}
-                    rows={5}
-                    className="w-full resize-y rounded-xl border border-gray-300 px-3 py-2.5 text-sm font-mono text-black focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
+            <div className="p-6 max-h-[calc(100vh-180px)] overflow-y-auto">
+              <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1.15fr)_minmax(320px,0.85fr)]">
+                <div className="space-y-5">
+                  <div className="space-y-3">
+                    <label htmlFor="preferred-columns" className="text-sm font-semibold text-gray-800">
+                      Preferred encryption column names
+                    </label>
+                    <textarea
+                      id="preferred-columns"
+                      value={columnDraft}
+                      onChange={event => setColumnDraft(event.target.value)}
+                      placeholder={"survey_name\nfsu_serial_no\nstate"}
+                      rows={5}
+                      className="w-full resize-y rounded-xl border border-gray-300 px-3 py-2.5 text-sm font-mono text-black focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                    <p className="text-xs text-gray-500">
+                      These columns are automatically selected for new fixed-width files.
+                    </p>
+                  </div>
+                  <div className="space-y-3">
+                    <label htmlFor="preferred-decryption-columns" className="text-sm font-semibold text-gray-800">
+                      Preferred decryption column names
+                    </label>
+                    <textarea
+                      id="preferred-decryption-columns"
+                      value={decryptionColumnDraft}
+                      onChange={event => setDecryptionColumnDraft(event.target.value)}
+                      placeholder={"survey_name\nfsu_serial_no\nstate"}
+                      rows={5}
+                      className="w-full resize-y rounded-xl border border-gray-300 px-3 py-2.5 text-sm font-mono text-black focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                    <p className="text-xs text-gray-500">
+                      These columns are automatically selected in every newly added encrypted CSV.
+                    </p>
+                  </div>
                   <p className="text-xs text-gray-500">
-                    These columns are automatically selected for new fixed-width files.
+                    Enter one name per line or separate names with commas. Matching ignores capitalization, spaces, hyphens, and underscores.
                   </p>
                 </div>
-                <div className="space-y-3">
-                  <label htmlFor="preferred-decryption-columns" className="text-sm font-semibold text-gray-800">
-                    Preferred decryption column names
-                  </label>
-                  <textarea
-                    id="preferred-decryption-columns"
-                    value={decryptionColumnDraft}
-                    onChange={event => setDecryptionColumnDraft(event.target.value)}
-                    placeholder={"survey_name\nfsu_serial_no\nstate"}
-                    rows={5}
-                    className="w-full resize-y rounded-xl border border-gray-300 px-3 py-2.5 text-sm font-mono text-black focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                  <p className="text-xs text-gray-500">
-                    These columns are automatically selected in every newly added encrypted CSV.
-                  </p>
-                </div>
-                <div className="border-t border-gray-100 pt-5 space-y-4">
+
+                <div className="self-start rounded-2xl border border-gray-200 bg-gray-50/70 p-5 space-y-4">
                   <div>
                     <p className="text-sm font-semibold text-gray-800">Default output folders</p>
                     <p className="text-xs text-gray-500 mt-1">Optional folders used automatically when no folder is chosen manually.</p>
                   </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-4">
                     <div className="space-y-2">
                       <label htmlFor="default-encryption-folder" className="text-sm font-semibold text-gray-800">
                         Default encryption folder
@@ -293,7 +300,7 @@ function AppLayout() {
                           value={encryptionFolderDraft}
                           readOnly
                           placeholder="No default selected"
-                          className="min-w-0 flex-1 rounded-xl border border-gray-300 px-3 py-2.5 text-sm text-black bg-gray-50"
+                          className="min-w-0 flex-1 rounded-xl border border-gray-300 px-3 py-2.5 text-sm text-black bg-white"
                         />
                         <button
                           type="button"
@@ -320,7 +327,7 @@ function AppLayout() {
                           value={decryptionFolderDraft}
                           readOnly
                           placeholder="No default selected"
-                          className="min-w-0 flex-1 rounded-xl border border-gray-300 px-3 py-2.5 text-sm text-black bg-gray-50"
+                          className="min-w-0 flex-1 rounded-xl border border-gray-300 px-3 py-2.5 text-sm text-black bg-white"
                         />
                         <button
                           type="button"
@@ -339,9 +346,7 @@ function AppLayout() {
                     </div>
                   </div>
                 </div>
-                <p className="text-xs text-gray-500">
-                  Enter one name per line or separate names with commas. Matching ignores capitalization, spaces, hyphens, and underscores.
-                </p>
+              </div>
             </div>
             <div className="flex justify-end gap-3 px-6 py-4 border-t border-gray-100 bg-gray-50/70 rounded-b-2xl">
               <button onClick={() => setSettingsOpen(false)} className="px-4 py-2 rounded-lg border border-gray-200 bg-white text-sm font-semibold text-gray-600 hover:text-black hover:border-gray-400 transition-colors">
