@@ -2129,12 +2129,34 @@ export default function FWFConverter() {
              <p className="text-sm text-gray-500">Upload encrypted CSV or fixed-width TXT files created by this tool, enter the same key settings, and select shared columns to restore in every file.</p>
              {needsDecryptLayout && (
                <div className="rounded-xl border border-blue-200 bg-blue-50/60 p-4 space-y-3">
-                 <div>
-                   <p className="text-sm font-semibold text-blue-950">Layouts for fixed-width TXT files and output</p>
-                   <p className="text-xs text-blue-700 mt-1">
-                     Select one or more layouts. Multiple TXT files are matched to the selected layouts by filename; each file can be corrected below.
-                   </p>
-                 </div>
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                      <p className="text-sm font-semibold text-blue-950">Layouts for fixed-width TXT files and output</p>
+                      <p className="text-xs text-blue-700 mt-1">
+                        Select one or more layouts. Multiple TXT files are matched to the selected layouts by filename; each file can be corrected below.
+                      </p>
+                    </div>
+                    {decryptLayoutOptions.length > 0 && (
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleDecryptLayoutSelectionChange(decryptLayoutOptions.map(layout => layout.id))}
+                          disabled={decryptRunning || decryptLayoutIds.length === decryptLayoutOptions.length}
+                          className="rounded-lg border border-blue-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-blue-800 hover:bg-blue-100 disabled:opacity-40"
+                        >
+                          Select all
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDecryptLayoutSelectionChange([])}
+                          disabled={decryptRunning || decryptLayoutIds.length === 0}
+                          className="rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-100 disabled:opacity-40"
+                        >
+                          Clear all
+                        </button>
+                      </div>
+                    )}
+                  </div>
                  {decryptLayoutOptions.length > 0 ? (
                    <div className="grid gap-2 sm:grid-cols-2">
                      {decryptLayoutOptions.map(layout => (
