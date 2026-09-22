@@ -12,12 +12,13 @@ import {
   getExcelTableInfos, type FieldDef, type ParseLayoutResult, type ExcelFileInfo, type ExcelTableInfo,
 } from "@/lib/fwf-parser";
 import {
-  encryptFWFToBlob, encryptFWFFileToStream, decryptCSVToBlob, decryptCSVFileToStream, readCSVHeaders,
-  type AnonymizeOptions,
+  encryptFWFToBlob, encryptFWFFileToStream, decryptCSVToBlob, decryptCSVFileToStream, decryptFixedWidthFileToStream, readCSVHeaders,
+  type AnonymizeOptions, type FieldSpec,
 } from "@/lib/anonymize";
 import { exportAs, EXPORT_FORMATS, type ExportFormat } from "@/lib/format-export";
 import { useColumnPreferences } from "@/lib/column-preferences-context";
 import { useOutputFolderPreferences } from "@/lib/output-folder-preferences-context";
+import { useOutputFormatPreferences, type OutputFormat } from "@/lib/output-format-preferences-context";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -89,6 +90,7 @@ interface DecryptFile {
   id: string;
   file: File;
   fileName: string;
+  isFixedWidth: boolean;
   csvText: string | null;
   headers: string[];
   cols: string[];
@@ -165,6 +167,86 @@ function parseExportCSV(text: string): { headers: string[]; rows: string[][] } {
       .filter(line => !line.trimStart().startsWith("#"))
       .map(parseCSVLine),
   };
+}
+
+function fixedWidthLineFromCells(cells: string[], fields: FieldSpec[]): string {
+  const width = fields.reduce((max, field) => Math.max(max, field.end), 0);
+  const output = Array.from({ length: width }, () => " ");
+  fields.forEach((field, index) => {
+    const fieldWidth = field.end - field.start + 1;
+    const value = (cells[index] ?? "").replace(/\r?\n/g, " ").slice(0, fieldWidth);
+    for (let offset = 0; offset < fieldWidth; offset++) {
+      output[field.start - 1 + offset] = value[offset] ?? " ";
+    }
+  });
+  return output.join("");
+}
+
+function fixedWidthTextFromCSV(text: string, fields: FieldSpec[]): string {
+  const parsed = parseExportCSV(text);
+  return parsed.rows.map(row => `${fixedWidthLineFromCells(row, fields)}\n`).join("");
+}
+
+function fixedWidthRowsFromText(text: string, fields: FieldSpec[]): string[][] {
+  return text.split(/\r?\n/)
+    .filter(line => line.length > 0)
+    .map(line => fields.map(field => line.padEnd(field.end).substring(field.start - 1, field.end).trim()));
+}
+
+function fixedWidthStreamFromCSV(
+  csvStream: ReadableStream<Uint8Array>,
+  fields: FieldSpec[],
+): ReadableStream<Uint8Array> {
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  let buffer = "";
+  let headerSkipped = false;
+
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      void (async () => {
+        const reader = csvStream.getReader();
+        const emitLines = (text: string, flush = false) => {
+          buffer += text;
+          const lines = buffer.split(/\n/);
+          buffer = flush ? "" : (lines.pop() ?? "");
+          for (const rawLine of lines) {
+            const line = rawLine.replace(/\r$/, "");
+            if (!line) continue;
+            if (!headerSkipped) {
+              headerSkipped = true;
+              continue;
+            }
+            controller.enqueue(encoder.encode(`${fixedWidthLineFromCells(parseCSVLine(line), fields)}\n`));
+          }
+        };
+
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            emitLines(decoder.decode(value, { stream: true }));
+          }
+          emitLines(decoder.decode(), true);
+          if (buffer) {
+            const line = buffer.replace(/\r$/, "");
+            if (line && headerSkipped) {
+              controller.enqueue(encoder.encode(`${fixedWidthLineFromCells(parseCSVLine(line), fields)}\n`));
+            }
+          }
+          controller.close();
+        } catch (error) {
+          controller.error(error);
+        } finally {
+          reader.releaseLock();
+        }
+      })();
+    },
+  });
+}
+
+function formatOutputName(baseName: string, suffix: string, format: OutputFormat): string {
+  return `${baseName}${suffix}.${format}`;
 }
 
 function triggerDownload(blob: Blob, name: string) {
@@ -353,11 +435,13 @@ export default function FWFConverter() {
   const [anonKeyHexInput, setAnonKeyHexInput] = useState("");
   const { preferredColumns, preferredDecryptionColumns } = useColumnPreferences();
   const { encryptionFolder: defaultEncryptionFolder, decryptionFolder: defaultDecryptionFolder } = useOutputFolderPreferences();
+  const { encryptionFormat, decryptionFormat } = useOutputFormatPreferences();
 
   // Global decrypt panel
   const [decryptFiles, setDecryptFiles] = useState<DecryptFile[]>([]);
   const [decryptOutputDirectory, setDecryptOutputDirectory] = useState<DirectoryHandle | null>(null);
   const [decryptOutputDirectoryName, setDecryptOutputDirectoryName] = useState("");
+  const [decryptLayoutId, setDecryptLayoutId] = useState("");
   const [decryptCommonSelectedColumns, setDecryptCommonSelectedColumns] = useState<string[] | null>(null);
   const [collapsedDecryptFiles, setCollapsedDecryptFiles] = useState<Set<string>>(new Set());
   const [decryptRunning, setDecryptRunning] = useState(false);
@@ -375,6 +459,7 @@ export default function FWFConverter() {
   const layoutInputRef = useRef<HTMLInputElement>(null);
   const dataInputRef = useRef<HTMLInputElement>(null);
   const decryptInputRef = useRef<HTMLInputElement>(null);
+  const decryptLayout = layouts.find(layout => layout.id === decryptLayoutId)?.result ?? null;
 
   useEffect(() => {
     if (!defaultEncryptionFolder) return;
@@ -514,9 +599,13 @@ export default function FWFConverter() {
       const fileHandle = await browserDirectory.getFileHandle(name, { create: true });
       writable = await fileHandle.createWritable();
     } else if (window.showSaveFilePicker) {
+      const isTxt = /\.txt$/i.test(name);
       const fileHandle = await window.showSaveFilePicker({
         suggestedName: name,
-        types: [{ description: "CSV file", accept: { "text/csv": [".csv"] } }],
+        types: [{
+          description: isTxt ? "Fixed-width TXT file" : "CSV file",
+          accept: { [isTxt ? "text/plain" : "text/csv"]: [isTxt ? ".txt" : ".csv"] },
+        }],
       });
       writable = await fileHandle.createWritable();
     }
@@ -551,7 +640,7 @@ export default function FWFConverter() {
     }
     triggerDownload(new Blob(
       chunks.map(chunk => chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength) as ArrayBuffer),
-      { type: "text/csv;charset=utf-8;" },
+      { type: /\.txt$/i.test(name) ? "text/plain;charset=utf-8;" : "text/csv;charset=utf-8;" },
     ), name);
   }, [outputDirectory, outputDirectoryName]);
 
@@ -1013,8 +1102,11 @@ export default function FWFConverter() {
           df.file, lo.result.fields, new Set(df.encColsList), buildOpts(),
           pct => patchFile(setDataFiles, dfId, { encProgress: pct })
         );
-        const outputName = `${df.outputBaseName}_anonymized.csv`;
-        await saveOutputStream(stream, outputName, streamTarget);
+        const outputName = formatOutputName(df.outputBaseName, "_anonymized", encryptionFormat);
+        const outputStream = encryptionFormat === "txt"
+          ? fixedWidthStreamFromCSV(stream, lo.result.fields)
+          : stream;
+        await saveOutputStream(outputStream, outputName, streamTarget);
         patchFile(setDataFiles, dfId, {
           encResultBlob: null, encResultKey: keyHex, encPreview: previewRows, encOutputSaved: true,
           encOutputName: outputName, step: "anon-done", encRunning: false,
@@ -1024,21 +1116,25 @@ export default function FWFConverter() {
           df.text!, lo.result.fields, new Set(df.encColsList), buildOpts(),
           pct => patchFile(setDataFiles, dfId, { encProgress: pct })
         );
-        const outputName = `${df.outputBaseName}_anonymized.csv`;
+        const outputName = formatOutputName(df.outputBaseName, "_anonymized", encryptionFormat);
         const outputSaved = Boolean(preparedStreamTarget);
-        const encryptedPreview = parseExportCSV(await blob.text()).rows.slice(0, 500);
+        const csvText = await blob.text();
+        const encryptedPreview = parseExportCSV(csvText).rows.slice(0, 500);
+        const outputBlob = encryptionFormat === "txt"
+          ? new Blob([fixedWidthTextFromCSV(csvText, lo.result.fields)], { type: "text/plain;charset=utf-8;" })
+          : new Blob([csvText], { type: "text/csv;charset=utf-8;" });
         if (outputSaved) {
-          await saveOutputStream(blob.stream(), outputName, preparedStreamTarget);
+          await saveOutputStream(outputBlob.stream(), outputName, preparedStreamTarget);
         }
         patchFile(setDataFiles, dfId, {
-          encResultBlob: outputSaved ? null : blob, encResultKey: keyHex, encPreview: encryptedPreview, encOutputSaved: outputSaved,
+          encResultBlob: outputSaved ? null : outputBlob, encResultKey: keyHex, encPreview: encryptedPreview, encOutputSaved: outputSaved,
           encOutputName: outputSaved ? outputName : "", step: "anon-done", encRunning: false,
         });
       }
     } catch (e) {
       patchFile(setDataFiles, dfId, { encError: `Encryption failed: ${(e as Error).message}`, encRunning: false });
     }
-  }, [dataFiles, layouts, outputDirectory, outputDirectoryName, chooseOutputDirectory, saveOutputStream, anonKeyMode, anonSeeds, anonPassphrase, anonPbkdf2Iter, anonDeterministic, anonAlphanumeric, anonKeyHexInput, anonStrongDiffusion]);
+  }, [dataFiles, layouts, outputDirectory, outputDirectoryName, chooseOutputDirectory, saveOutputStream, encryptionFormat, anonKeyMode, anonSeeds, anonPassphrase, anonPbkdf2Iter, anonDeterministic, anonAlphanumeric, anonKeyHexInput, anonStrongDiffusion]);
 
   const handleEncryptAll = useCallback(async () => {
     const filesToEncrypt = dataFiles.filter(df => df.activated);
@@ -1145,7 +1241,9 @@ export default function FWFConverter() {
         lo.result!.fields.map(f => line.padEnd(f.end).substring(f.start - 1, f.end).trim())
       );
       const anonymized = df.encResultBlob
-        ? parseExportCSV(await df.encResultBlob.text()).rows.slice(0, MAX)
+        ? encryptionFormat === "txt"
+          ? fixedWidthRowsFromText(await df.encResultBlob.text(), lo.result.fields).slice(0, MAX)
+          : parseExportCSV(await df.encResultBlob.text()).rows.slice(0, MAX)
         : df.encPreview.slice(0, MAX);
       setCompareData({ headers, original, anonymized });
     } finally { setCompareLoading(false); }
@@ -1155,10 +1253,35 @@ export default function FWFConverter() {
 
   const handleDecryptFiles = useCallback(async (files: File[]) => {
     setDecryptError("");
+    if (files.some(file => /\.txt$/i.test(file.name)) && !decryptLayout) {
+      setDecryptError("Select the matching layout before adding fixed-width TXT files.");
+      return;
+    }
     const loaded: Array<DecryptFile | null> = await Promise.all(files.map(async file => {
       const text = file.size >= STREAMING_FILE_THRESHOLD
         ? await file.slice(0, 64 * 1024).text()
         : await file.text();
+      const isFixedWidth = /\.txt$/i.test(file.name);
+      if (isFixedWidth) {
+        const fields = decryptLayout!.fields;
+        return {
+          id: uid(),
+          file,
+          fileName: file.name,
+          isFixedWidth: true,
+          csvText: null,
+          headers: fields.map(field => field.varName),
+          cols: preferredColumnsForHeaders(fields.map(field => field.varName), preferredDecryptionColumns),
+          encryptedPreview: fixedWidthRowsFromText(text, fields).slice(0, 500),
+          decryptedPreview: [],
+          running: false,
+          progress: 0,
+          blob: null,
+          outputSaved: false,
+          outputName: "",
+          error: "",
+        } satisfies DecryptFile;
+      }
       const headers = readCSVHeaders(text);
       if (!headers.length) return null;
       const parsed = parseExportCSV(text);
@@ -1166,6 +1289,7 @@ export default function FWFConverter() {
         id: uid(),
         file,
         fileName: file.name,
+        isFixedWidth: false,
         csvText: file.size < STREAMING_FILE_THRESHOLD ? text : null,
         headers,
         cols: preferredColumnsForHeaders(headers, preferredDecryptionColumns),
@@ -1182,7 +1306,7 @@ export default function FWFConverter() {
 
     const validFiles = loaded.filter((entry): entry is DecryptFile => entry !== null);
     if (validFiles.length !== files.length) {
-      setDecryptError("One or more selected files could not be read as CSV files.");
+      setDecryptError("One or more selected files could not be read as CSV or fixed-width TXT files.");
     }
     if (validFiles.length === 0) return;
 
@@ -1193,7 +1317,7 @@ export default function FWFConverter() {
       : decryptCommonSelectedColumns.filter(column => common.includes(column));
     setDecryptCommonSelectedColumns(selectedCommon);
     setDecryptFiles(next);
-  }, [decryptFiles, decryptCommonSelectedColumns, preferredDecryptionColumns]);
+  }, [decryptFiles, decryptCommonSelectedColumns, decryptLayout, preferredDecryptionColumns]);
 
   const removeDecryptFile = useCallback((id: string) => {
     const next = decryptFiles.filter(file => file.id !== id);
@@ -1229,7 +1353,7 @@ export default function FWFConverter() {
   }, []);
 
   const handleDecrypt = useCallback(async () => {
-    if (decryptFiles.length === 0) { setDecryptError("Upload at least one encrypted CSV first."); return; }
+    if (decryptFiles.length === 0) { setDecryptError("Upload at least one encrypted CSV or TXT file first."); return; }
     const filesMissingColumns = decryptFiles.filter(file => file.cols.length === 0);
     if (filesMissingColumns.length > 0) {
       setDecryptFiles(prev => prev.map(file => filesMissingColumns.some(missing => missing.id === file.id)
@@ -1241,6 +1365,11 @@ export default function FWFConverter() {
     }
     setDecryptRunning(true);
     setDecryptError("");
+    if (decryptionFormat === "txt" && !decryptLayout) {
+      setDecryptError("Select a layout in the fixed-width TXT output section before decrypting.");
+      setDecryptRunning(false);
+      return;
+    }
 
     let streamTarget: DirectoryHandle | string | null =
       decryptOutputDirectory ?? (decryptOutputDirectoryName || null);
@@ -1274,6 +1403,27 @@ export default function FWFConverter() {
 
     const decryptOne = async (entry: DecryptFile) => {
       try {
+        if (entry.isFixedWidth) {
+          const fixedWidthResult = decryptFixedWidthFileToStream(
+            entry.file,
+            decryptLayout!.fields,
+            new Set(entry.cols),
+            buildOpts(),
+            decryptionFormat,
+            pct => patchDecryptFile(setDecryptFiles, entry.id, { progress: pct }),
+          );
+          const outputBaseName = entry.fileName.replace(/\.[^.]+$/, "");
+          const outputName = formatOutputName(outputBaseName, "_decrypted", decryptionFormat);
+          await saveOutputStream(fixedWidthResult.stream, outputName, streamTarget);
+          patchDecryptFile(setDecryptFiles, entry.id, {
+            decryptedPreview: fixedWidthResult.previewRows.slice(0, 500),
+            outputSaved: true,
+            outputName,
+            running: false,
+            progress: 100,
+          });
+          return;
+        }
         if (entry.file.size >= STREAMING_FILE_THRESHOLD) {
           const { stream, previewRows } = decryptCSVFileToStream(
             entry.file,
@@ -1281,8 +1431,12 @@ export default function FWFConverter() {
             buildOpts(),
             pct => patchDecryptFile(setDecryptFiles, entry.id, { progress: pct }),
           );
-          const outputName = `${entry.fileName.replace(/\.csv$/i, "")}_decrypted.csv`;
-          await saveOutputStream(stream, outputName, streamTarget);
+          const outputBaseName = entry.fileName.replace(/\.[^.]+$/, "");
+          const outputName = formatOutputName(outputBaseName, "_decrypted", decryptionFormat);
+          const outputStream = decryptionFormat === "txt"
+            ? fixedWidthStreamFromCSV(stream, decryptLayout!.fields)
+            : stream;
+          await saveOutputStream(outputStream, outputName, streamTarget);
           patchDecryptFile(setDecryptFiles, entry.id, {
             decryptedPreview: previewRows.slice(0, 500),
             outputSaved: true,
@@ -1297,10 +1451,15 @@ export default function FWFConverter() {
             buildOpts(),
             pct => patchDecryptFile(setDecryptFiles, entry.id, { progress: pct }),
           );
-          const outputName = `${entry.fileName.replace(/\.csv$/i, "")}_decrypted.csv`;
-          await saveOutputStream(blob.stream(), outputName, streamTarget);
+          const outputBaseName = entry.fileName.replace(/\.[^.]+$/, "");
+          const outputName = formatOutputName(outputBaseName, "_decrypted", decryptionFormat);
+          const csvText = await blob.text();
+          const outputBlob = decryptionFormat === "txt"
+            ? new Blob([fixedWidthTextFromCSV(csvText, decryptLayout!.fields)], { type: "text/plain;charset=utf-8;" })
+            : new Blob([csvText], { type: "text/csv;charset=utf-8;" });
+          await saveOutputStream(outputBlob.stream(), outputName, streamTarget);
           patchDecryptFile(setDecryptFiles, entry.id, {
-            decryptedPreview: parseExportCSV(await blob.text()).rows.slice(0, 500),
+            decryptedPreview: parseExportCSV(csvText).rows.slice(0, 500),
             outputSaved: true,
             outputName,
             running: false,
@@ -1317,7 +1476,7 @@ export default function FWFConverter() {
 
     await Promise.all(decryptFiles.map(decryptOne));
     setDecryptRunning(false);
-  }, [decryptFiles, decryptOutputDirectory, decryptOutputDirectoryName, chooseDecryptOutputDirectory, saveOutputStream, anonKeyMode, anonSeeds, anonPassphrase, anonPbkdf2Iter, anonDeterministic, anonAlphanumeric, anonKeyHexInput]);
+  }, [decryptFiles, decryptOutputDirectory, decryptOutputDirectoryName, chooseDecryptOutputDirectory, saveOutputStream, decryptionFormat, decryptLayout, anonKeyMode, anonSeeds, anonPassphrase, anonPbkdf2Iter, anonDeterministic, anonAlphanumeric, anonKeyHexInput]);
 
   const handleOpenDecryptCompare = useCallback(async (fileId: string) => {
     const decryptFile = decryptFiles.find(file => file.id === fileId);
@@ -1390,18 +1549,18 @@ export default function FWFConverter() {
     <div className="space-y-8">
 
       {/* Always-mounted hidden input for decrypt so the ref is never nulled out */}
-      <input ref={decryptInputRef} type="file" accept=".csv" multiple className="hidden"
+      <input ref={decryptInputRef} type="file" accept=".csv,.txt" multiple className="hidden"
         onChange={e => { const f = Array.from(e.target.files ?? []); if (f.length) void handleDecryptFiles(f); e.target.value = ""; }} />
 
       {activatedFiles.length === 0 && anonMode === "encrypt" && (
         <div className="border border-blue-200 bg-blue-50 rounded-2xl px-6 py-5 flex flex-col sm:flex-row sm:items-center gap-4">
           <div className="flex-1">
-            <h2 className="text-base font-semibold text-blue-950">Already have an encrypted CSV?</h2>
-            <p className="text-sm text-blue-800 mt-1">Open direct decryption without uploading layouts or fixed-width data files.</p>
+            <h2 className="text-base font-semibold text-blue-950">Already have an encrypted CSV or TXT?</h2>
+            <p className="text-sm text-blue-800 mt-1">Open direct decryption for AIRAVATA DEA CSV or fixed-width TXT files.</p>
           </div>
           <button onClick={() => setAnonMode("decrypt")}
             className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 transition-colors whitespace-nowrap">
-            <LockOpen className="w-4 h-4" />Decrypt a CSV directly
+            <LockOpen className="w-4 h-4" />Decrypt a CSV/TXT directly
           </button>
         </div>
       )}
@@ -1780,12 +1939,21 @@ export default function FWFConverter() {
                         <SuccessBadge text={`Encryption complete — ${df.encColsList.length} column${df.encColsList.length !== 1 ? "s" : ""} encrypted`} />
                         {df.encOutputSaved && (
                           <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
-                            Large-file mode wrote the anonymized CSV directly to <strong>{df.encOutputName}</strong>. The source file was processed in chunks without loading it into memory.
+                            Large-file mode wrote the anonymized {encryptionFormat.toUpperCase()} directly to <strong>{df.encOutputName}</strong>. The source file was processed in chunks without loading it into memory.
                           </div>
                         )}
 
+                         {df.encResultBlob && encryptionFormat === "txt" && (
+                           <button
+                             onClick={() => triggerDownload(df.encResultBlob!, formatOutputName(df.outputBaseName, "_anonymized", "txt"))}
+                             className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border-2 border-emerald-500 text-emerald-700 text-sm font-semibold hover:bg-emerald-50 transition-colors"
+                           >
+                             <Download className="w-4 h-4" />Download fixed-width TXT
+                           </button>
+                         )}
+
                          {/* Format download panel — available when the result is retained in memory. */}
-                         {df.encResultBlob && <div className="border border-gray-200 rounded-xl overflow-hidden">
+                         {df.encResultBlob && encryptionFormat === "csv" && <div className="border border-gray-200 rounded-xl overflow-hidden">
                            {EXPORT_FORMATS.map((fmt, idx) => {
                             const isRunning = df.exportingFmts.includes(fmt.id);
                             return (
@@ -1854,8 +2022,8 @@ export default function FWFConverter() {
                 <LockOpen className="w-6 h-6 text-blue-600" />
               </div>
               <div>
-                <h2 className="text-lg font-semibold text-black">Direct CSV decryption</h2>
-                <p className="text-sm text-gray-500 mt-0.5">Decrypt an existing AIRAVATA DEA CSV without a layout file.</p>
+                <h2 className="text-lg font-semibold text-black">Direct CSV/TXT decryption</h2>
+                <p className="text-sm text-gray-500 mt-0.5">Decrypt an existing AIRAVATA DEA CSV or fixed-width TXT file.</p>
               </div>
             </div>
             <button onClick={() => setAnonMode("encrypt")}
@@ -1864,10 +2032,31 @@ export default function FWFConverter() {
             </button>
           </div>
           <div className="p-6 space-y-5">
-            <p className="text-sm text-gray-500">Upload one or more encrypted CSV files created by this tool, enter the same key settings, and select shared columns to restore in every file.</p>
+             <p className="text-sm text-gray-500">Upload encrypted CSV or fixed-width TXT files created by this tool, enter the same key settings, and select shared columns to restore in every file.</p>
+             <div className="rounded-xl border border-blue-200 bg-blue-50/60 p-4 space-y-2">
+               <label htmlFor="decrypt-layout" className="text-sm font-semibold text-blue-950">
+                 Layout for fixed-width TXT files and output
+               </label>
+               <select
+                 id="decrypt-layout"
+                 value={decryptLayoutId}
+                 onChange={event => setDecryptLayoutId(event.target.value)}
+                 className="w-full rounded-xl border border-blue-200 bg-white px-3 py-2.5 text-sm text-black focus:outline-none focus:ring-2 focus:ring-blue-500"
+               >
+                 <option value="">Choose the matching layout when using TXT</option>
+                 {layouts.filter(layout => layout.result).map(layout => (
+                   <option key={layout.id} value={layout.id}>
+                     {layout.fileName}{layout.result?.sheetName ? ` — ${layout.result.sheetName}` : ""}
+                   </option>
+                 ))}
+               </select>
+               <p className="text-xs text-blue-700">
+                 Required for fixed-width TXT input or TXT output. Upload a layout in Step 1 if it is not listed.
+               </p>
+             </div>
             {decryptFiles.length === 0 ? (
-              <DropZone accept=".csv" multiple icon={<LockOpen className="w-9 h-9 text-blue-600" />}
-                label="Drop anonymized CSV files here" sublabel="Multiple .CSV files encrypted by this tool are supported"
+               <DropZone accept=".csv,.txt" multiple icon={<LockOpen className="w-9 h-9 text-blue-600" />}
+                 label="Drop anonymized CSV or TXT files here" sublabel="CSV and fixed-width TXT files encrypted by this tool are supported"
                 inputRef={decryptInputRef} onFiles={files => void handleDecryptFiles(files)} />
             ) : (
               <div className="space-y-4">
@@ -1949,7 +2138,7 @@ export default function FWFConverter() {
                         </div>
                         <button
                           onClick={handleDecrypt}
-                          disabled={decryptRunning || decryptFiles.some(file => file.cols.length === 0)}
+                           disabled={decryptRunning || decryptFiles.some(file => file.cols.length === 0) || (decryptionFormat === "txt" && !decryptLayout)}
                           className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors whitespace-nowrap"
                         >
                           {decryptRunning

@@ -1796,6 +1796,168 @@ export function decryptCSVFileToStream(
   return { stream: readableStreamFromTextGenerator(generator), headers, previewRows };
 }
 
+/**
+ * Decrypt a fixed-width TXT export using the layout that produced it.
+ * The output can remain fixed-width TXT or be converted to the regular
+ * AIRAVATA CSV representation.
+ */
+export function decryptFixedWidthFileToStream(
+  file: File,
+  fields: FieldSpec[],
+  decCols: ReadonlySet<string>,
+  options: AnonymizeOptions,
+  outputFormat: "csv" | "txt",
+  onProgress: (pct: number) => void,
+): DecryptStreamResult {
+  const keyChain = resolveKeyChain(options);
+  const colKs4: Record<string, Uint8Array[]> = {};
+  const colCiphers: Record<string, FastDeterministicCipher> = {};
+
+  if (options.deterministic) {
+    for (const field of fields) {
+      if (decCols.has(field.varName)) {
+        colKs4[field.varName] = keyChain.map(kh =>
+          makeCellKsBytes(DET_KS_SIZE, kh, hashColIV(kh, field.varName))
+        );
+        colCiphers[field.varName] = buildFastDecryptCipher(colKs4[field.varName]);
+      }
+    }
+  }
+
+  const alnumKey = options.alphanumericOutput ? deriveAlnumKey(keyChain) : "";
+  const colAlnumKs: Record<string, Uint8Array> = {};
+  if (options.alphanumericOutput) {
+    for (const field of fields) {
+      if (decCols.has(field.varName)) {
+        colAlnumKs[field.varName] = makeCellKsBytes(
+          DET_KS_SIZE, alnumKey, hashColIV(alnumKey, field.varName)
+        );
+      }
+    }
+  }
+
+  const headers = fields.map(field => field.varName);
+  const previewRows: string[][] = [];
+  const generator = (async function* () {
+    let output = outputFormat === "csv"
+      ? `${headers.map(csvEscape).join(",")}\n`
+      : "";
+    const ivCounters: Record<string, number> = {};
+    const deterministicCache = new Map<string, string>();
+    const deterministicCacheLimit = 500_000;
+    const fastDecryptCompatible: Record<string, boolean | undefined> = {};
+    let lastProgress = -1;
+
+    const emitProgress = (bytesRead: number) => {
+      const next = file.size > 0
+        ? Math.min(99, Math.round((bytesRead / file.size) * 100))
+        : 0;
+      if (next !== lastProgress) {
+        lastProgress = next;
+        onProgress(next);
+      }
+    };
+
+    for await (const line of iterateTextFileLines(file, emitProgress)) {
+      if (line.trim().length === 0) continue;
+      const values = fields.map(field =>
+        line.padEnd(field.end).substring(field.start - 1, field.end).trim()
+      );
+
+      for (let index = 0; index < fields.length; index++) {
+        const field = fields[index];
+        let val = values[index];
+        if (!decCols.has(field.varName) || val.length === 0) continue;
+
+        if (options.deterministic) {
+          const cacheKey = `${field.varName}\x00${val}`;
+          const cached = deterministicCache.get(cacheKey);
+          if (cached !== undefined) {
+            deterministicCache.delete(cacheKey);
+            deterministicCache.set(cacheKey, cached);
+            val = cached;
+          } else {
+            if (options.alphanumericOutput) {
+              val = decryptAlphanumCell(colAlnumKs[field.varName], val);
+            }
+            const fastValue = fastDecryptCompatible[field.varName] === false
+              ? ""
+              : decryptChain4Fast(
+                  colCiphers[field.varName],
+                  val,
+                  options.strongDiffusion !== false,
+                );
+            if (fastDecryptCompatible[field.varName] === undefined) {
+              const referenceValue = decryptChain4(
+                colKs4[field.varName],
+                val,
+                options.strongDiffusion !== false,
+              );
+              fastDecryptCompatible[field.varName] = fastValue === referenceValue;
+              val = fastDecryptCompatible[field.varName] ? fastValue : referenceValue;
+            } else if (fastDecryptCompatible[field.varName]) {
+              val = fastValue;
+            } else {
+              val = decryptChain4(
+                colKs4[field.varName],
+                val,
+                options.strongDiffusion !== false,
+              );
+            }
+            if (deterministicCache.size >= deterministicCacheLimit) {
+              const oldest = deterministicCache.keys().next().value;
+              if (oldest !== undefined) deterministicCache.delete(oldest);
+            }
+            deterministicCache.set(cacheKey, val);
+          }
+        } else {
+          ivCounters[field.varName] = ((ivCounters[field.varName] ?? 0) + 1) >>> 0;
+          const columnSeed = hashColIV(keyChain[0], field.varName);
+          const ksArr = keyChain.map((kh, round) =>
+            makeCellKsBytes(
+              ksSize(val.length),
+              kh,
+              (ivCounters[field.varName] ^ columnSeed ^ (round * 0x12345679)) >>> 0,
+            )
+          );
+          if (options.alphanumericOutput) {
+            val = decryptAlphanumCell(colAlnumKs[field.varName], val);
+          }
+          val = decryptChain4(ksArr, val, options.strongDiffusion !== false);
+        }
+        values[index] = val;
+      }
+
+      if (previewRows.length < 500) previewRows.push(values);
+      if (outputFormat === "csv") {
+        output += `${values.map(csvEscape).join(",")}\n`;
+      } else {
+        const lineWidth = fields.reduce((max, field) => Math.max(max, field.end), 0);
+        const fixedWidth = Array.from({ length: lineWidth }, () => " ");
+        fields.forEach((field, index) => {
+          const fieldWidth = field.end - field.start + 1;
+          const value = values[index].slice(0, fieldWidth);
+          for (let offset = 0; offset < fieldWidth; offset++) {
+            fixedWidth[field.start - 1 + offset] = value[offset] ?? " ";
+          }
+        });
+        output += `${fixedWidth.join("")}\n`;
+      }
+
+      if (output.length >= 256 * 1024) {
+        const chunk = output;
+        output = "";
+        yield chunk;
+      }
+    }
+
+    if (output) yield output;
+    onProgress(100);
+  })();
+
+  return { stream: readableStreamFromTextGenerator(generator), headers, previewRows };
+}
+
 // ── Streaming decrypt: CSV text → decrypted CSV Blob ─────────────────────────
 // Automatically detects v1 vs v2 format from the CSV header comments.
 // For v2: parses export salt and verifies HMAC before decrypting.

@@ -11,6 +11,7 @@ import RiskAssessmentComparison from "@/pages/RiskAssessmentComparison";
 import { EncryptionSettingsProvider, useEncryptionSettings } from "@/lib/encryption-settings-context";
 import { ColumnPreferencesProvider, useColumnPreferences } from "@/lib/column-preferences-context";
 import { OutputFolderPreferencesProvider, getFolderLabel, useOutputFolderPreferences, type FolderTarget } from "@/lib/output-folder-preferences-context";
+import { OutputFormatPreferencesProvider, useOutputFormatPreferences, type OutputFormat } from "@/lib/output-format-preferences-context";
 import { Component, useCallback, useEffect, useState, type ErrorInfo, type ReactNode } from "react";
 
 function usePackagedHashLocation(): [string, (to: string) => void] {
@@ -81,6 +82,12 @@ function AppLayout() {
     setEncryptionFolder,
     setDecryptionFolder,
   } = useOutputFolderPreferences();
+  const {
+    encryptionFormat,
+    decryptionFormat,
+    setEncryptionFormat,
+    setDecryptionFormat,
+  } = useOutputFormatPreferences();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [columnDraft, setColumnDraft] = useState("");
   const [decryptionColumnDraft, setDecryptionColumnDraft] = useState("");
@@ -88,6 +95,8 @@ function AppLayout() {
   const [decryptionFolderDraft, setDecryptionFolderDraft] = useState("");
   const [encryptionFolderSelection, setEncryptionFolderSelection] = useState<FolderTarget>(null);
   const [decryptionFolderSelection, setDecryptionFolderSelection] = useState<FolderTarget>(null);
+  const [encryptionFormatDraft, setEncryptionFormatDraft] = useState<OutputFormat>("csv");
+  const [decryptionFormatDraft, setDecryptionFormatDraft] = useState<OutputFormat>("csv");
 
   const openSettings = () => {
     setColumnDraft(preferredColumns.join("\n"));
@@ -96,6 +105,8 @@ function AppLayout() {
     setDecryptionFolderDraft(getFolderLabel(decryptionFolder));
     setEncryptionFolderSelection(encryptionFolder);
     setDecryptionFolderSelection(decryptionFolder);
+    setEncryptionFormatDraft(encryptionFormat);
+    setDecryptionFormatDraft(decryptionFormat);
     setSettingsOpen(true);
   };
 
@@ -113,6 +124,8 @@ function AppLayout() {
     setPreferredDecryptionColumns(decryptionColumns);
     setEncryptionFolder(encryptionFolderSelection);
     setDecryptionFolder(decryptionFolderSelection);
+    setEncryptionFormat(encryptionFormatDraft);
+    setDecryptionFormat(decryptionFormatDraft);
     setSettingsOpen(false);
   };
 
@@ -345,6 +358,36 @@ function AppLayout() {
                       )}
                     </div>
                   </div>
+                  <div className="border-t border-gray-200 pt-4 space-y-3">
+                    <div>
+                      <p className="text-sm font-semibold text-gray-800">Output file formats</p>
+                      <p className="text-xs text-gray-500 mt-1">TXT exports keep the fixed-width positions from the selected layout.</p>
+                    </div>
+                    <div className="space-y-3">
+                      <label className="block space-y-1.5">
+                        <span className="text-sm font-semibold text-gray-800">Encrypted file format</span>
+                        <select
+                          value={encryptionFormatDraft}
+                          onChange={event => setEncryptionFormatDraft(event.target.value as OutputFormat)}
+                          className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2.5 text-sm text-black focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        >
+                          <option value="csv">CSV — Excel-compatible</option>
+                          <option value="txt">TXT — fixed-width</option>
+                        </select>
+                      </label>
+                      <label className="block space-y-1.5">
+                        <span className="text-sm font-semibold text-gray-800">Decrypted file format</span>
+                        <select
+                          value={decryptionFormatDraft}
+                          onChange={event => setDecryptionFormatDraft(event.target.value as OutputFormat)}
+                          className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2.5 text-sm text-black focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        >
+                          <option value="csv">CSV — Excel-compatible</option>
+                          <option value="txt">TXT — fixed-width</option>
+                        </select>
+                      </label>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -418,14 +461,16 @@ function App() {
         <EncryptionSettingsProvider>
           <ColumnPreferencesProvider>
             <OutputFolderPreferencesProvider>
-              <AppErrorBoundary>
-                <WouterRouter
-                  base={routerBase}
-                  hook={isPackagedDesktop ? usePackagedHashLocation : undefined}
-                >
-                  <AppLayout />
-                </WouterRouter>
-              </AppErrorBoundary>
+              <OutputFormatPreferencesProvider>
+                <AppErrorBoundary>
+                  <WouterRouter
+                    base={routerBase}
+                    hook={isPackagedDesktop ? usePackagedHashLocation : undefined}
+                  >
+                    <AppLayout />
+                  </WouterRouter>
+                </AppErrorBoundary>
+              </OutputFormatPreferencesProvider>
             </OutputFolderPreferencesProvider>
             <Toaster />
           </ColumnPreferencesProvider>
