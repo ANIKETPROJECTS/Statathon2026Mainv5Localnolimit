@@ -386,9 +386,16 @@ function extractLevelNumber(value: string): string | null {
   return suffixMatch ? String(Number(suffixMatch[1])) : null;
 }
 
+function extractFileVersion(value: string): string | null {
+  const matches = [...value.matchAll(/(?:^|[^a-z0-9])(?:lv|level|v)[\s._-]*(\d{1,3})/gi)];
+  const match = matches.at(-1);
+  return match?.[1] ? String(Number(match[1])) : null;
+}
+
 function scoreLayoutFileMatch(dataFileName: string, layout: LayoutEntry): number {
   const dataStem = normalizeMatchStem(dataFileName);
   const dataLevel = extractLevelNumber(dataFileName);
+  const dataVersion = extractFileVersion(dataFileName);
   const sourceText = `${layout.fileName} ${layout.result?.sheetName ?? ""}`;
   const explicitNames = extractExplicitLayoutFileNames(sourceText);
 
@@ -396,6 +403,7 @@ function scoreLayoutFileMatch(dataFileName: string, layout: LayoutEntry): number
     const explicitStem = normalizeMatchStem(explicitName);
     if (explicitStem === dataStem) return 100;
     if (explicitStem.length >= 6 && (explicitStem.includes(dataStem) || dataStem.includes(explicitStem))) return 92;
+    if (dataVersion && extractFileVersion(explicitName) === dataVersion) return 96;
   }
 
   const layoutStem = normalizeMatchStem(layout.fileName);
@@ -421,9 +429,11 @@ function chooseDecryptLayout(
     selectedLayoutIds.includes(layout.id) && Boolean(layout.result)
   );
   if (candidates.length <= 1) return candidates[0];
-  return [...candidates].sort((left, right) =>
-    scoreLayoutFileMatch(fileName, right) - scoreLayoutFileMatch(fileName, left)
-  )[0];
+  const ranked = candidates
+    .map(layout => ({ layout, score: scoreLayoutFileMatch(fileName, layout) }))
+    .sort((left, right) => right.score - left.score);
+  if (ranked[0].score <= 0 || ranked[0].score === ranked[1].score) return undefined;
+  return ranked[0].layout;
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
