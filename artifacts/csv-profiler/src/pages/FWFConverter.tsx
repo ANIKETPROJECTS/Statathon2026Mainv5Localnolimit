@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useContext } from "react";
+import { useState, useRef, useCallback, useContext, useEffect } from "react";
 import { useEncryptionSettings } from "@/lib/encryption-settings-context";
 import {
   CheckCircle2, AlertTriangle, X, ArrowRight, Download, Eye,
@@ -17,6 +17,7 @@ import {
 } from "@/lib/anonymize";
 import { exportAs, EXPORT_FORMATS, type ExportFormat } from "@/lib/format-export";
 import { useColumnPreferences } from "@/lib/column-preferences-context";
+import { useOutputFolderPreferences } from "@/lib/output-folder-preferences-context";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -120,6 +121,8 @@ declare global {
       setColumnPreferences: (columns: string[]) => Promise<void>;
       getDecryptionColumnPreferences: () => Promise<string[] | null>;
       setDecryptionColumnPreferences: (columns: string[]) => Promise<void>;
+      getDefaultOutputFolders: () => Promise<{ encryption: string | null; decryption: string | null } | null>;
+      setDefaultOutputFolders: (folders: { encryption?: string | null; decryption?: string | null }) => Promise<void>;
     };
     showSaveFilePicker?: (options?: {
       suggestedName?: string;
@@ -349,6 +352,7 @@ export default function FWFConverter() {
   const { alphanumeric: anonAlphanumeric, setAlphanumeric: setAnonAlphanumeric } = useEncryptionSettings();
   const [anonKeyHexInput, setAnonKeyHexInput] = useState("");
   const { preferredColumns, preferredDecryptionColumns } = useColumnPreferences();
+  const { encryptionFolder: defaultEncryptionFolder, decryptionFolder: defaultDecryptionFolder } = useOutputFolderPreferences();
 
   // Global decrypt panel
   const [decryptFiles, setDecryptFiles] = useState<DecryptFile[]>([]);
@@ -371,6 +375,28 @@ export default function FWFConverter() {
   const layoutInputRef = useRef<HTMLInputElement>(null);
   const dataInputRef = useRef<HTMLInputElement>(null);
   const decryptInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!defaultEncryptionFolder) return;
+    if (typeof defaultEncryptionFolder === "string") {
+      setOutputDirectory(null);
+      setOutputDirectoryName(defaultEncryptionFolder);
+    } else {
+      setOutputDirectory(defaultEncryptionFolder as DirectoryHandle);
+      setOutputDirectoryName(defaultEncryptionFolder.name ?? "Default encryption folder");
+    }
+  }, [defaultEncryptionFolder]);
+
+  useEffect(() => {
+    if (!defaultDecryptionFolder) return;
+    if (typeof defaultDecryptionFolder === "string") {
+      setDecryptOutputDirectory(null);
+      setDecryptOutputDirectoryName(defaultDecryptionFolder);
+    } else {
+      setDecryptOutputDirectory(defaultDecryptionFolder as DirectoryHandle);
+      setDecryptOutputDirectoryName(defaultDecryptionFolder.name ?? "Default decryption folder");
+    }
+  }, [defaultDecryptionFolder]);
 
   const buildOpts = (): AnonymizeOptions => ({
     keyMode: anonKeyMode, seeds: anonSeeds,

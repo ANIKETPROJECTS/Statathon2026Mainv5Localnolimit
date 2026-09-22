@@ -94,6 +94,10 @@ function decryptionColumnPreferencesPath() {
   return path.join(app.getPath("userData"), "decryption-column-preferences.json");
 }
 
+function defaultOutputFoldersPath() {
+  return path.join(app.getPath("userData"), "default-output-folders.json");
+}
+
 ipcMain.handle("get-column-preferences", async () => {
   try {
     const stored = JSON.parse(fs.readFileSync(columnPreferencesPath(), "utf8"));
@@ -138,6 +142,42 @@ ipcMain.handle("set-decryption-column-preferences", async (_event, columns) => {
   const preferencesFile = decryptionColumnPreferencesPath();
   fs.mkdirSync(path.dirname(preferencesFile), { recursive: true });
   fs.writeFileSync(preferencesFile, JSON.stringify(safeColumns, null, 2), "utf8");
+});
+
+ipcMain.handle("get-default-output-folders", async () => {
+  try {
+    const stored = JSON.parse(fs.readFileSync(defaultOutputFoldersPath(), "utf8"));
+    return {
+      encryption: typeof stored?.encryption === "string" && stored.encryption.trim() ? stored.encryption.trim() : null,
+      decryption: typeof stored?.decryption === "string" && stored.decryption.trim() ? stored.decryption.trim() : null
+    };
+  } catch (error) {
+    if (error && error.code === "ENOENT") return null;
+    console.error("Could not read default output folders:", error);
+    return null;
+  }
+});
+
+ipcMain.handle("set-default-output-folders", async (_event, folders) => {
+  let existing = {};
+  try {
+    existing = JSON.parse(fs.readFileSync(defaultOutputFoldersPath(), "utf8"));
+  } catch {
+    // The preferences file may not exist yet.
+  }
+  const hasEncryption = Object.prototype.hasOwnProperty.call(folders || {}, "encryption");
+  const hasDecryption = Object.prototype.hasOwnProperty.call(folders || {}, "decryption");
+  const safeFolders = {
+    encryption: hasEncryption
+      ? (typeof folders.encryption === "string" && folders.encryption.trim() ? folders.encryption.trim() : null)
+      : (typeof existing?.encryption === "string" ? existing.encryption : null),
+    decryption: hasDecryption
+      ? (typeof folders.decryption === "string" && folders.decryption.trim() ? folders.decryption.trim() : null)
+      : (typeof existing?.decryption === "string" ? existing.decryption : null)
+  };
+  const preferencesFile = defaultOutputFoldersPath();
+  fs.mkdirSync(path.dirname(preferencesFile), { recursive: true });
+  fs.writeFileSync(preferencesFile, JSON.stringify(safeFolders, null, 2), "utf8");
 });
 
 app.whenReady().then(() => {

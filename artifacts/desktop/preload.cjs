@@ -8,5 +8,7 @@ contextBridge.exposeInMainWorld("desktopAPI", {
   getColumnPreferences: () => ipcRenderer.invoke("get-column-preferences"),
   setColumnPreferences: (columns) => ipcRenderer.invoke("set-column-preferences", columns),
   getDecryptionColumnPreferences: () => ipcRenderer.invoke("get-decryption-column-preferences"),
-  setDecryptionColumnPreferences: (columns) => ipcRenderer.invoke("set-decryption-column-preferences", columns)
+  setDecryptionColumnPreferences: (columns) => ipcRenderer.invoke("set-decryption-column-preferences", columns),
+  getDefaultOutputFolders: () => ipcRenderer.invoke("get-default-output-folders"),
+  setDefaultOutputFolders: (folders) => ipcRenderer.invoke("set-default-output-folders", folders)
 });

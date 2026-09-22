@@ -125,8 +125,8 @@ export function OutputFolderPreferencesProvider({ children }: { children: React.
         readBrowserFolder(DECRYPTION_FOLDER_KEY),
       ]);
       if (!cancelled) {
-        setEncryptionFolderState(browserEncryption ?? readFolderName(ENCRYPTION_FOLDER_KEY) || null);
-        setDecryptionFolderState(browserDecryption ?? readFolderName(DECRYPTION_FOLDER_KEY) || null);
+        setEncryptionFolderState(browserEncryption ?? (readFolderName(ENCRYPTION_FOLDER_KEY) || null));
+        setDecryptionFolderState(browserDecryption ?? (readFolderName(DECRYPTION_FOLDER_KEY) || null));
       }
     };
     void load();
@@ -139,7 +139,10 @@ export function OutputFolderPreferencesProvider({ children }: { children: React.
     setEncryptionFolderState(folder);
     const desktopStorage = window.desktopAPI?.setDefaultOutputFolders;
     if (desktopStorage) {
-      void desktopStorage({ encryption: typeof folder === "string" ? folder : null }).catch(() => {});
+      void desktopStorage({
+        encryption: typeof folder === "string" ? folder : null,
+        decryption: typeof decryptionFolder === "string" ? decryptionFolder : null,
+      }).catch(() => {});
     } else {
       writeFolderName(ENCRYPTION_FOLDER_KEY, folderName(folder));
       void writeBrowserFolder(ENCRYPTION_FOLDER_KEY, typeof folder === "string" ? null : folder);
@@ -150,7 +153,10 @@ export function OutputFolderPreferencesProvider({ children }: { children: React.
     setDecryptionFolderState(folder);
     const desktopStorage = window.desktopAPI?.setDefaultOutputFolders;
     if (desktopStorage) {
-      void desktopStorage({ decryption: typeof folder === "string" ? folder : null }).catch(() => {});
+      void desktopStorage({
+        encryption: typeof encryptionFolder === "string" ? encryptionFolder : null,
+        decryption: typeof folder === "string" ? folder : null,
+      }).catch(() => {});
     } else {
       writeFolderName(DECRYPTION_FOLDER_KEY, folderName(folder));
       void writeBrowserFolder(DECRYPTION_FOLDER_KEY, typeof folder === "string" ? null : folder);
