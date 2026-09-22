@@ -68,23 +68,34 @@ const queryClient = new QueryClient({
 function AppLayout() {
   const [, navigate] = useLocation();
   const { alphanumeric, setAlphanumeric } = useEncryptionSettings();
-  const { preferredColumns, setPreferredColumns } = useColumnPreferences();
+  const {
+    preferredColumns,
+    preferredDecryptionColumns,
+    setPreferredColumns,
+    setPreferredDecryptionColumns,
+  } = useColumnPreferences();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [columnDraft, setColumnDraft] = useState("");
+  const [decryptionColumnDraft, setDecryptionColumnDraft] = useState("");
 
   const openSettings = () => {
     setColumnDraft(preferredColumns.join("\n"));
+    setDecryptionColumnDraft(preferredDecryptionColumns.join("\n"));
     setSettingsOpen(true);
   };
 
-  const saveSettings = () => {
-    const columns = [...new Set(
-      columnDraft
+  const parseColumnDraft = (draft: string) => [...new Set(
+    draft
         .split(/[\n,]+/)
         .map(column => column.trim())
         .filter(Boolean),
-    )];
+  )];
+
+  const saveSettings = () => {
+    const columns = parseColumnDraft(columnDraft);
+    const decryptionColumns = parseColumnDraft(decryptionColumnDraft);
     setPreferredColumns(columns);
+    setPreferredDecryptionColumns(decryptionColumns);
     setSettingsOpen(false);
   };
 
@@ -163,27 +174,48 @@ function AppLayout() {
             <div className="flex items-center justify-between px-6 py-5 border-b border-gray-100">
               <div>
                 <h2 id="settings-title" className="text-lg font-semibold text-black">Settings</h2>
-                <p className="text-sm text-gray-500 mt-1">Choose columns to select automatically for new files.</p>
+                <p className="text-sm text-gray-500 mt-1">Choose encryption and decryption columns to select automatically.</p>
               </div>
               <button onClick={() => setSettingsOpen(false)} className="p-2 rounded-lg text-gray-400 hover:text-black hover:bg-gray-100 transition-colors" aria-label="Close settings">
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <div className="p-6 space-y-3">
-              <label htmlFor="preferred-columns" className="text-sm font-semibold text-gray-800">
-                Preferred column names
-              </label>
-              <textarea
-                id="preferred-columns"
-                value={columnDraft}
-                onChange={event => setColumnDraft(event.target.value)}
-                placeholder={"survey_name\nfsu_serial_no\nstate"}
-                rows={7}
-                className="w-full resize-y rounded-xl border border-gray-300 px-3 py-2.5 text-sm font-mono text-black focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-              <p className="text-xs text-gray-500">
-                Enter one name per line or separate names with commas. Matching ignores capitalization, spaces, hyphens, and underscores.
-              </p>
+              <div className="p-6 space-y-5">
+                <div className="space-y-3">
+                  <label htmlFor="preferred-columns" className="text-sm font-semibold text-gray-800">
+                    Preferred encryption column names
+                  </label>
+                  <textarea
+                    id="preferred-columns"
+                    value={columnDraft}
+                    onChange={event => setColumnDraft(event.target.value)}
+                    placeholder={"survey_name\nfsu_serial_no\nstate"}
+                    rows={5}
+                    className="w-full resize-y rounded-xl border border-gray-300 px-3 py-2.5 text-sm font-mono text-black focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  <p className="text-xs text-gray-500">
+                    These columns are automatically selected for new fixed-width files.
+                  </p>
+                </div>
+                <div className="space-y-3">
+                  <label htmlFor="preferred-decryption-columns" className="text-sm font-semibold text-gray-800">
+                    Preferred decryption column names
+                  </label>
+                  <textarea
+                    id="preferred-decryption-columns"
+                    value={decryptionColumnDraft}
+                    onChange={event => setDecryptionColumnDraft(event.target.value)}
+                    placeholder={"survey_name\nfsu_serial_no\nstate"}
+                    rows={5}
+                    className="w-full resize-y rounded-xl border border-gray-300 px-3 py-2.5 text-sm font-mono text-black focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  <p className="text-xs text-gray-500">
+                    These columns are automatically selected in every newly added encrypted CSV.
+                  </p>
+                </div>
+                <p className="text-xs text-gray-500">
+                  Enter one name per line or separate names with commas. Matching ignores capitalization, spaces, hyphens, and underscores.
+                </p>
             </div>
             <div className="flex justify-end gap-3 px-6 py-4 border-t border-gray-100 bg-gray-50/70 rounded-b-2xl">
               <button onClick={() => setSettingsOpen(false)} className="px-4 py-2 rounded-lg border border-gray-200 bg-white text-sm font-semibold text-gray-600 hover:text-black hover:border-gray-400 transition-colors">

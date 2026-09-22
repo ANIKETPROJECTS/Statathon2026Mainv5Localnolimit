@@ -90,6 +90,7 @@ interface DecryptFile {
   fileName: string;
   csvText: string | null;
   headers: string[];
+  cols: string[];
   encryptedPreview: string[][];
   decryptedPreview: string[][];
   running: boolean;
@@ -117,6 +118,8 @@ declare global {
       closeOutputFile: (id: string) => Promise<void>;
       getColumnPreferences: () => Promise<string[] | null>;
       setColumnPreferences: (columns: string[]) => Promise<void>;
+      getDecryptionColumnPreferences: () => Promise<string[] | null>;
+      setDecryptionColumnPreferences: (columns: string[]) => Promise<void>;
     };
     showSaveFilePicker?: (options?: {
       suggestedName?: string;
@@ -261,6 +264,21 @@ function preferredColumnsForLayout(layout: LayoutEntry | undefined, preferredCol
     .map(field => field.varName);
 }
 
+function preferredColumnsForHeaders(headers: string[], preferredColumns: string[]): string[] {
+  if (headers.length === 0 || preferredColumns.length === 0) return [];
+  const preferred = new Set(preferredColumns.map(normalizeColumnPreference).filter(Boolean));
+  return headers.filter(header => preferred.has(normalizeColumnPreference(header)));
+}
+
+function commonColumnsForDecryptFiles(files: Pick<DecryptFile, "headers">[]): string[] {
+  return files.length === 0
+    ? []
+    : files.slice(1).reduce<string[]>(
+      (common, file) => common.filter(column => file.headers.includes(column)),
+      [...files[0].headers],
+    );
+}
+
 function matchTokens(value: string): string[] {
   return value.toLowerCase()
     .match(/[a-z]+|\d+/g)
@@ -330,11 +348,12 @@ export default function FWFConverter() {
   const [anonStrongDiffusion, setAnonStrongDiffusion] = useState(true);
   const { alphanumeric: anonAlphanumeric, setAlphanumeric: setAnonAlphanumeric } = useEncryptionSettings();
   const [anonKeyHexInput, setAnonKeyHexInput] = useState("");
-  const { preferredColumns } = useColumnPreferences();
+  const { preferredColumns, preferredDecryptionColumns } = useColumnPreferences();
 
   // Global decrypt panel
   const [decryptFiles, setDecryptFiles] = useState<DecryptFile[]>([]);
-  const [decryptCols, setDecryptCols] = useState<Set<string>>(new Set());
+  const [decryptCommonSelectedColumns, setDecryptCommonSelectedColumns] = useState<string[] | null>(null);
+  const [collapsedDecryptFiles, setCollapsedDecryptFiles] = useState<Set<string>>(new Set());
   const [decryptRunning, setDecryptRunning] = useState(false);
   const [decryptError, setDecryptError] = useState("");
 
@@ -1088,6 +1107,7 @@ export default function FWFConverter() {
         fileName: file.name,
         csvText: file.size < STREAMING_FILE_THRESHOLD ? text : null,
         headers,
+        cols: preferredColumnsForHeaders(headers, preferredDecryptionColumns),
         encryptedPreview: parsed.rows.slice(0, 500),
         decryptedPreview: [],
         running: false,
@@ -1106,30 +1126,58 @@ export default function FWFConverter() {
     if (validFiles.length === 0) return;
 
     const next = [...decryptFiles, ...validFiles];
-    const common = next.slice(1).reduce<string[]>(
-      (columns, entry) => columns.filter(column => entry.headers.includes(column)),
-      [...next[0].headers],
-    );
-    const retained = [...decryptCols].filter(column => common.includes(column));
-    setDecryptCols(new Set(retained.length > 0 ? retained : common));
+    const common = commonColumnsForDecryptFiles(next);
+    const selectedCommon = decryptCommonSelectedColumns === null
+      ? common.filter(column => next.every(file => file.cols.includes(column)))
+      : decryptCommonSelectedColumns.filter(column => common.includes(column));
+    setDecryptCommonSelectedColumns(selectedCommon);
     setDecryptFiles(next);
-  }, [decryptFiles, decryptCols]);
+  }, [decryptFiles, decryptCommonSelectedColumns, preferredDecryptionColumns]);
 
   const removeDecryptFile = useCallback((id: string) => {
     const next = decryptFiles.filter(file => file.id !== id);
-    const common = next.length === 0
-      ? []
-      : next.slice(1).reduce<string[]>(
-        (columns, entry) => columns.filter(column => entry.headers.includes(column)),
-        [...next[0].headers],
-      );
-    setDecryptCols(previous => new Set([...previous].filter(column => common.includes(column))));
+    const common = commonColumnsForDecryptFiles(next);
+    setDecryptCommonSelectedColumns(previous => previous
+      ? previous.filter(column => common.includes(column))
+      : null);
     setDecryptFiles(next);
   }, [decryptFiles]);
 
+  const handleDecryptFileColumns = useCallback((fileId: string, next: Set<string>) => {
+    setDecryptFiles(prev => prev.map(file => file.id === fileId
+      ? { ...file, cols: [...next] }
+      : file
+    ));
+  }, []);
+
+  const handleCommonDecryptColumnsChange = useCallback((next: Set<string>) => {
+    const selected = [...next];
+    setDecryptCommonSelectedColumns(selected);
+    setDecryptFiles(prev => {
+      const common = commonColumnsForDecryptFiles(prev);
+      const selectedCommon = new Set(selected.filter(column => common.includes(column)));
+      return prev.map(file => {
+        const columns = new Set(file.cols);
+        for (const column of common) {
+          if (selectedCommon.has(column)) columns.add(column);
+          else columns.delete(column);
+        }
+        return { ...file, cols: [...columns] };
+      });
+    });
+  }, []);
+
   const handleDecrypt = useCallback(async () => {
     if (decryptFiles.length === 0) { setDecryptError("Upload at least one encrypted CSV first."); return; }
-    if (decryptCols.size === 0) { setDecryptError("Select at least one column to decrypt."); return; }
+    const filesMissingColumns = decryptFiles.filter(file => file.cols.length === 0);
+    if (filesMissingColumns.length > 0) {
+      setDecryptFiles(prev => prev.map(file => filesMissingColumns.some(missing => missing.id === file.id)
+        ? { ...file, error: "Select at least one column to decrypt in this file." }
+        : file
+      ));
+      setDecryptError("Select at least one column in every file before decrypting.");
+      return;
+    }
     setDecryptRunning(true);
     setDecryptError("");
 
@@ -1169,7 +1217,7 @@ export default function FWFConverter() {
         if (entry.file.size >= STREAMING_FILE_THRESHOLD) {
           const { stream, previewRows } = decryptCSVFileToStream(
             entry.file,
-            decryptCols,
+            new Set(entry.cols),
             buildOpts(),
             pct => patchDecryptFile(setDecryptFiles, entry.id, { progress: pct }),
           );
@@ -1185,7 +1233,7 @@ export default function FWFConverter() {
         } else {
           const blob = await decryptCSVToBlob(
             entry.csvText!,
-            decryptCols,
+            new Set(entry.cols),
             buildOpts(),
             pct => patchDecryptFile(setDecryptFiles, entry.id, { progress: pct }),
           );
@@ -1206,7 +1254,7 @@ export default function FWFConverter() {
 
     await Promise.all(decryptFiles.map(decryptOne));
     setDecryptRunning(false);
-  }, [decryptFiles, decryptCols, outputDirectory, outputDirectoryName, chooseOutputDirectory, saveOutputStream, anonKeyMode, anonSeeds, anonPassphrase, anonPbkdf2Iter, anonDeterministic, anonAlphanumeric, anonKeyHexInput]);
+  }, [decryptFiles, outputDirectory, outputDirectoryName, chooseOutputDirectory, saveOutputStream, anonKeyMode, anonSeeds, anonPassphrase, anonPbkdf2Iter, anonDeterministic, anonAlphanumeric, anonKeyHexInput]);
 
   const handleOpenDecryptCompare = useCallback(async (fileId: string) => {
     const decryptFile = decryptFiles.find(file => file.id === fileId);
@@ -1239,12 +1287,12 @@ export default function FWFConverter() {
       activatedFiles.every(df => df.encColsList.includes(column))
     )).filter(column => commonColumnNames.includes(column)),
   );
-  const commonDecryptColumns = decryptFiles.length > 0
-    ? decryptFiles.slice(1).reduce<string[]>(
-      (common, file) => common.filter(column => file.headers.includes(column)),
-      [...decryptFiles[0].headers],
-    )
-    : [];
+  const commonDecryptColumns = commonColumnsForDecryptFiles(decryptFiles);
+  const selectedDecryptCommonColumns = new Set(
+    (decryptCommonSelectedColumns ?? commonDecryptColumns.filter(column =>
+      decryptFiles.every(file => file.cols.includes(column))
+    )).filter(column => commonDecryptColumns.includes(column)),
+  );
   const decryptCompletedCount = decryptFiles.filter(file => file.blob || file.outputSaved).length;
   const decryptOverallProgress = decryptFiles.length > 0
     ? Math.round(decryptFiles.reduce((sum, file) => sum + file.progress, 0) / decryptFiles.length)
@@ -1268,6 +1316,8 @@ export default function FWFConverter() {
       : `${anonymizedFileCount} of ${activatedFiles.length} files anonymized`;
   const allAnonFilesCollapsed = activatedFiles.length > 1
     && activatedFiles.every(df => collapsedAnonFiles.has(df.id));
+  const allDecryptFilesCollapsed = decryptFiles.length > 1
+    && decryptFiles.every(file => collapsedDecryptFiles.has(file.id));
 
   const phase = readyLayouts.length === 0 ? 0 : assignedFiles.length === 0 ? 1 : 2;
 
@@ -1728,49 +1778,113 @@ export default function FWFConverter() {
                     className="ml-auto flex items-center gap-1.5 px-3 py-2 rounded-lg border border-blue-300 text-blue-700 text-sm font-semibold hover:bg-blue-50 disabled:opacity-50 transition-colors">
                     <Plus className="w-4 h-4" />Add files
                   </button>
-                  <button onClick={() => { setDecryptFiles([]); setDecryptCols(new Set()); setDecryptError(""); }}
+                  <button onClick={() => {
+                    setDecryptFiles([]);
+                    setDecryptCommonSelectedColumns(null);
+                    setCollapsedDecryptFiles(new Set());
+                    setDecryptError("");
+                  }}
                     disabled={decryptRunning}
                     className="text-gray-400 hover:text-black disabled:opacity-50" aria-label="Remove all decryption files">
                     <X className="w-4 h-4" />
                   </button>
                 </div>
 
-                <div className="space-y-2">
-                  {decryptFiles.map(file => (
-                    <div key={file.id} className="rounded-xl border border-gray-200 bg-white px-4 py-3">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <FileText className="w-4 h-4 text-blue-600 flex-shrink-0" />
-                        <span className="text-sm font-semibold text-black truncate">{file.fileName}</span>
-                        <span className="text-xs text-gray-500 flex-shrink-0">{file.headers.length} columns</span>
-                        <button onClick={() => removeDecryptFile(file.id)} disabled={decryptRunning}
-                          className="ml-auto text-gray-400 hover:text-black disabled:opacity-50" aria-label={`Remove ${file.fileName}`}>
-                          <X className="w-4 h-4" />
-                        </button>
-                      </div>
-                      {file.running && (
-                        <div className="mt-3">
-                          <ProgressBar pct={file.progress} label={`Decrypting ${file.progress}%…`} icon={<Shuffle className="w-4 h-4 animate-spin" />} />
+                {decryptFiles.length > 1 && (
+                  <button
+                    onClick={() => setCollapsedDecryptFiles(prev => {
+                      const next = new Set(prev);
+                      if (allDecryptFilesCollapsed) decryptFiles.forEach(file => next.delete(file.id));
+                      else decryptFiles.forEach(file => next.add(file.id));
+                      return next;
+                    })}
+                    className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-200 bg-white text-xs font-semibold text-gray-600 hover:text-black hover:border-gray-400 transition-colors"
+                    aria-label={allDecryptFilesCollapsed ? "Expand all decryption file sections" : "Minimize all decryption file sections"}
+                  >
+                    {allDecryptFilesCollapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                    {allDecryptFilesCollapsed ? "Expand all files" : "Minimize all files"}
+                  </button>
+                )}
+
+                <div className="space-y-3">
+                  {decryptFiles.map(file => {
+                    const isCollapsed = collapsedDecryptFiles.has(file.id);
+                    return (
+                      <div key={file.id} className="rounded-xl border border-gray-200 bg-white overflow-hidden">
+                        <div className={`flex items-center gap-2 px-4 py-3 ${isCollapsed ? "bg-white" : "bg-gray-50"}`}>
+                          <button
+                            onClick={() => setCollapsedDecryptFiles(prev => {
+                              const next = new Set(prev);
+                              if (next.has(file.id)) next.delete(file.id);
+                              else next.add(file.id);
+                              return next;
+                            })}
+                            className="p-1 rounded-md text-gray-400 hover:text-black hover:bg-gray-200 transition-colors flex-shrink-0"
+                            aria-label={isCollapsed ? `Expand ${file.fileName}` : `Minimize ${file.fileName}`}
+                            title={isCollapsed ? "Expand file section" : "Minimize file section"}
+                          >
+                            {isCollapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                          </button>
+                          <FileText className="w-4 h-4 text-blue-600 flex-shrink-0" />
+                          <span className="text-sm font-semibold text-black truncate">{file.fileName}</span>
+                          <span className="text-xs text-gray-500 flex-shrink-0">{file.headers.length} columns</span>
+                          <button onClick={() => removeDecryptFile(file.id)} disabled={decryptRunning}
+                            className="ml-auto text-gray-400 hover:text-black disabled:opacity-50" aria-label={`Remove ${file.fileName}`}>
+                            <X className="w-4 h-4" />
+                          </button>
                         </div>
-                      )}
-                      {file.error && <div className="mt-3"><ErrorBox message={file.error} /></div>}
-                      {file.outputSaved && (
-                        <p className="mt-2 text-xs text-emerald-700">
-                          Saved to output folder as <strong>{file.outputName}</strong>.
-                        </p>
-                      )}
-                    </div>
-                  ))}
+                        {!isCollapsed && (
+                          <div className="px-4 pb-4 pt-3 space-y-3">
+                            <ColSelector
+                              allCols={file.headers}
+                              selected={new Set(file.cols)}
+                              onChange={next => handleDecryptFileColumns(file.id, next)}
+                              label={`Columns to decrypt in ${file.fileName}`}
+                            />
+                            {file.running && (
+                              <ProgressBar pct={file.progress} label={`Decrypting ${file.progress}%…`} icon={<Shuffle className="w-4 h-4 animate-spin" />} />
+                            )}
+                            {file.error && <ErrorBox message={file.error} />}
+                            {file.outputSaved && (
+                              <p className="text-xs text-emerald-700">
+                                Saved to output folder as <strong>{file.outputName}</strong>.
+                              </p>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
 
-                <ColSelector
-                  allCols={commonDecryptColumns}
-                  selected={decryptCols}
-                  onChange={next => setDecryptCols(new Set([...next].filter(column => commonDecryptColumns.includes(column))))}
-                  label={decryptFiles.length > 1 ? "Common columns to decrypt in every file" : "Columns to decrypt"}
-                />
+                {decryptFiles.length > 1 && commonDecryptColumns.length > 0 && (
+                  <div className="border border-blue-200 bg-blue-50/40 rounded-xl p-5 space-y-3">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div>
+                        <p className="text-sm font-semibold text-blue-950">Common columns across all files</p>
+                        <p className="text-xs text-blue-700 mt-1">
+                          Select a column once to add it to every file. Unique columns remain editable in each file above.
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => handleCommonDecryptColumnsChange(new Set())}
+                        disabled={decryptRunning || !decryptFiles.some(file => file.cols.length > 0)}
+                        className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg border border-blue-300 bg-white text-xs font-semibold text-blue-800 hover:bg-blue-100 disabled:opacity-40 transition-colors whitespace-nowrap"
+                      >
+                        Clear common columns
+                      </button>
+                    </div>
+                    <ColSelector
+                      allCols={commonDecryptColumns}
+                      selected={selectedDecryptCommonColumns}
+                      onChange={handleCommonDecryptColumnsChange}
+                      label="Apply common columns to all files"
+                    />
+                  </div>
+                )}
                 {decryptFiles.length > 1 && commonDecryptColumns.length === 0 && (
                   <p className="text-sm text-amber-700 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2">
-                    These files do not share any column names. Select files with at least one common column.
+                    These files do not share any column names. Use each file&apos;s own selector above.
                   </p>
                 )}
               </div>
@@ -1784,7 +1898,7 @@ export default function FWFConverter() {
               />
             )}
             {decryptFiles.length > 0 && (
-              <button onClick={handleDecrypt} disabled={decryptRunning || decryptCols.size === 0}
+              <button onClick={handleDecrypt} disabled={decryptRunning || decryptFiles.some(file => file.cols.length === 0)}
                 className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-black text-white text-base font-semibold hover:bg-gray-800 disabled:opacity-50 transition-colors">
                 {decryptRunning
                   ? <><Spin />Decrypting {decryptFiles.length} file{decryptFiles.length !== 1 ? "s" : ""}…</>

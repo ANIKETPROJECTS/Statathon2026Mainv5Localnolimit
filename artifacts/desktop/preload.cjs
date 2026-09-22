@@ -6,5 +6,7 @@ contextBridge.exposeInMainWorld("desktopAPI", {
   writeOutputChunk: (id, chunk) => ipcRenderer.invoke("write-output-chunk", id, chunk),
   closeOutputFile: (id) => ipcRenderer.invoke("close-output-file", id),
   getColumnPreferences: () => ipcRenderer.invoke("get-column-preferences"),
-  setColumnPreferences: (columns) => ipcRenderer.invoke("set-column-preferences", columns)
+  setColumnPreferences: (columns) => ipcRenderer.invoke("set-column-preferences", columns),
+  getDecryptionColumnPreferences: () => ipcRenderer.invoke("get-decryption-column-preferences"),
+  setDecryptionColumnPreferences: (columns) => ipcRenderer.invoke("set-decryption-column-preferences", columns)
 });

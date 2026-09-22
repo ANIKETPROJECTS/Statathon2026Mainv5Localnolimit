@@ -90,6 +90,10 @@ function columnPreferencesPath() {
   return path.join(app.getPath("userData"), "column-preferences.json");
 }
 
+function decryptionColumnPreferencesPath() {
+  return path.join(app.getPath("userData"), "decryption-column-preferences.json");
+}
+
 ipcMain.handle("get-column-preferences", async () => {
   try {
     const stored = JSON.parse(fs.readFileSync(columnPreferencesPath(), "utf8"));
@@ -109,6 +113,29 @@ ipcMain.handle("set-column-preferences", async (_event, columns) => {
       .map((value) => value.trim()))]
     : [];
   const preferencesFile = columnPreferencesPath();
+  fs.mkdirSync(path.dirname(preferencesFile), { recursive: true });
+  fs.writeFileSync(preferencesFile, JSON.stringify(safeColumns, null, 2), "utf8");
+});
+
+ipcMain.handle("get-decryption-column-preferences", async () => {
+  try {
+    const stored = JSON.parse(fs.readFileSync(decryptionColumnPreferencesPath(), "utf8"));
+    return Array.isArray(stored)
+      ? stored.filter((value) => typeof value === "string" && value.trim().length > 0)
+      : [];
+  } catch (error) {
+    if (error && error.code === "ENOENT") return null;
+    console.error("Could not read saved decryption column preferences:", error);
+    return null;
+  }
+});
+
+ipcMain.handle("set-decryption-column-preferences", async (_event, columns) => {
+  const safeColumns = Array.isArray(columns)
+    ? [...new Set(columns.filter((value) => typeof value === "string" && value.trim().length > 0)
+      .map((value) => value.trim()))]
+    : [];
+  const preferencesFile = decryptionColumnPreferencesPath();
   fs.mkdirSync(path.dirname(preferencesFile), { recursive: true });
   fs.writeFileSync(preferencesFile, JSON.stringify(safeColumns, null, 2), "utf8");
 });
