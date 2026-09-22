@@ -966,11 +966,12 @@ export default function FWFConverter() {
         );
         const outputName = `${df.outputBaseName}_anonymized.csv`;
         const outputSaved = Boolean(preparedStreamTarget);
+        const encryptedPreview = parseExportCSV(await blob.text()).rows.slice(0, 500);
         if (outputSaved) {
           await saveOutputStream(blob.stream(), outputName, preparedStreamTarget);
         }
         patchFile(setDataFiles, dfId, {
-          encResultBlob: outputSaved ? null : blob, encResultKey: keyHex, encPreview: [], encOutputSaved: outputSaved,
+          encResultBlob: outputSaved ? null : blob, encResultKey: keyHex, encPreview: encryptedPreview, encOutputSaved: outputSaved,
           encOutputName: outputSaved ? outputName : "", step: "anon-done", encRunning: false,
         });
       }
@@ -1839,6 +1840,30 @@ export default function FWFConverter() {
                    </p>
                  )}
 
+                 {decryptFiles.length > 0 && (
+                   <div className="border border-blue-200 bg-blue-50 rounded-xl p-5 space-y-3">
+                     <div>
+                       <p className="text-sm font-semibold text-blue-950">Batch decryption</p>
+                       <p className="text-xs text-blue-700 mt-1">
+                         Process all {decryptFiles.length} selected file{decryptFiles.length !== 1 ? "s" : ""} using their current column selections.
+                       </p>
+                     </div>
+                     <ProgressBar
+                       pct={decryptOverallProgress}
+                       label={decryptRunning
+                         ? `Decrypting ${decryptCompletedCount} of ${decryptFiles.length} files…`
+                         : decryptCompletedCount === decryptFiles.length
+                           ? `${decryptCompletedCount} of ${decryptFiles.length} files decrypted`
+                           : `Ready to decrypt ${decryptFiles.length} file${decryptFiles.length !== 1 ? "s" : ""}`}
+                       icon={decryptRunning
+                         ? <Shuffle className="w-4 h-4 animate-spin" />
+                         : decryptCompletedCount === decryptFiles.length
+                           ? <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                           : undefined}
+                     />
+                   </div>
+                 )}
+
                  <div className="space-y-3">
                    {decryptFiles.map(file => {
                     const isCollapsed = collapsedDecryptFiles.has(file.id);
@@ -1893,13 +1918,6 @@ export default function FWFConverter() {
               </div>
             )}
             {decryptError && <ErrorBox message={decryptError} />}
-            {decryptRunning && (
-              <ProgressBar
-                pct={decryptOverallProgress}
-                label={`Decrypting ${decryptCompletedCount} of ${decryptFiles.length} files…`}
-                icon={<Shuffle className="w-4 h-4 animate-spin" />}
-              />
-            )}
             {decryptFiles.length > 0 && (
               <button onClick={handleDecrypt} disabled={decryptRunning || decryptFiles.some(file => file.cols.length === 0)}
                 className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-black text-white text-base font-semibold hover:bg-gray-800 disabled:opacity-50 transition-colors">
