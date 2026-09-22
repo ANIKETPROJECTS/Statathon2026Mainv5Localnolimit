@@ -1183,8 +1183,7 @@ export default function FWFConverter() {
 
     let streamTarget: DirectoryHandle | string | null =
       outputDirectory ?? (outputDirectoryName || null);
-    const hasLargeFile = decryptFiles.some(file => file.file.size >= STREAMING_FILE_THRESHOLD);
-    if (hasLargeFile && !streamTarget) {
+    if (!streamTarget) {
       if (window.desktopAPI) {
         const selectedPath = await window.desktopAPI.chooseOutputFolder();
         if (selectedPath) {
@@ -1195,8 +1194,8 @@ export default function FWFConverter() {
         streamTarget = await chooseOutputDirectory();
       }
     }
-    if (hasLargeFile && !streamTarget) {
-      setDecryptError("Choose an output folder before decrypting large files.");
+    if (!streamTarget) {
+      setDecryptError("Choose an output folder before decrypting files.");
       setDecryptRunning(false);
       return;
     }
@@ -1237,9 +1236,12 @@ export default function FWFConverter() {
             buildOpts(),
             pct => patchDecryptFile(setDecryptFiles, entry.id, { progress: pct }),
           );
+          const outputName = `${entry.fileName.replace(/\.csv$/i, "")}_decrypted.csv`;
+          await saveOutputStream(blob.stream(), outputName, streamTarget);
           patchDecryptFile(setDecryptFiles, entry.id, {
-            blob,
             decryptedPreview: parseExportCSV(await blob.text()).rows.slice(0, 500),
+            outputSaved: true,
+            outputName,
             running: false,
             progress: 100,
           });
@@ -1806,8 +1808,39 @@ export default function FWFConverter() {
                   </button>
                 )}
 
-                <div className="space-y-3">
-                  {decryptFiles.map(file => {
+                 {decryptFiles.length > 1 && commonDecryptColumns.length > 0 && (
+                   <div className="border border-blue-200 bg-blue-50/40 rounded-xl p-5 space-y-3">
+                     <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                       <div>
+                         <p className="text-sm font-semibold text-blue-950">Common columns across all files</p>
+                         <p className="text-xs text-blue-700 mt-1">
+                           Select a column once to add it to every file. Unique columns remain editable in each file below.
+                         </p>
+                       </div>
+                       <button
+                         onClick={() => handleCommonDecryptColumnsChange(new Set())}
+                         disabled={decryptRunning || !decryptFiles.some(file => file.cols.length > 0)}
+                         className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg border border-blue-300 bg-white text-xs font-semibold text-blue-800 hover:bg-blue-100 disabled:opacity-40 transition-colors whitespace-nowrap"
+                       >
+                         Clear common columns
+                       </button>
+                     </div>
+                     <ColSelector
+                       allCols={commonDecryptColumns}
+                       selected={selectedDecryptCommonColumns}
+                       onChange={handleCommonDecryptColumnsChange}
+                       label="Apply common columns to all files"
+                     />
+                   </div>
+                 )}
+                 {decryptFiles.length > 1 && commonDecryptColumns.length === 0 && (
+                   <p className="text-sm text-amber-700 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2">
+                     These files do not share any column names. Use each file&apos;s own selector below.
+                   </p>
+                 )}
+
+                 <div className="space-y-3">
+                   {decryptFiles.map(file => {
                     const isCollapsed = collapsedDecryptFiles.has(file.id);
                     return (
                       <div key={file.id} className="rounded-xl border border-gray-200 bg-white overflow-hidden">
@@ -1857,36 +1890,6 @@ export default function FWFConverter() {
                   })}
                 </div>
 
-                {decryptFiles.length > 1 && commonDecryptColumns.length > 0 && (
-                  <div className="border border-blue-200 bg-blue-50/40 rounded-xl p-5 space-y-3">
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                      <div>
-                        <p className="text-sm font-semibold text-blue-950">Common columns across all files</p>
-                        <p className="text-xs text-blue-700 mt-1">
-                          Select a column once to add it to every file. Unique columns remain editable in each file above.
-                        </p>
-                      </div>
-                      <button
-                        onClick={() => handleCommonDecryptColumnsChange(new Set())}
-                        disabled={decryptRunning || !decryptFiles.some(file => file.cols.length > 0)}
-                        className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg border border-blue-300 bg-white text-xs font-semibold text-blue-800 hover:bg-blue-100 disabled:opacity-40 transition-colors whitespace-nowrap"
-                      >
-                        Clear common columns
-                      </button>
-                    </div>
-                    <ColSelector
-                      allCols={commonDecryptColumns}
-                      selected={selectedDecryptCommonColumns}
-                      onChange={handleCommonDecryptColumnsChange}
-                      label="Apply common columns to all files"
-                    />
-                  </div>
-                )}
-                {decryptFiles.length > 1 && commonDecryptColumns.length === 0 && (
-                  <p className="text-sm text-amber-700 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2">
-                    These files do not share any column names. Use each file&apos;s own selector above.
-                  </p>
-                )}
               </div>
             )}
             {decryptError && <ErrorBox message={decryptError} />}
@@ -1908,18 +1911,12 @@ export default function FWFConverter() {
             {decryptCompletedCount > 0 && !decryptRunning && (
               <SuccessBadge text={`${decryptCompletedCount} file${decryptCompletedCount !== 1 ? "s" : ""} decrypted — original values restored`} />
             )}
-            {decryptFiles.some(file => file.blob || file.outputSaved) && (
+            {decryptFiles.some(file => file.outputSaved) && (
               <div className="space-y-2">
-                {decryptFiles.filter(file => file.blob || file.outputSaved).map(file => (
+                {decryptFiles.filter(file => file.outputSaved).map(file => (
                   <div key={file.id} className="flex flex-col sm:flex-row gap-2">
-                    {file.blob && (
-                      <button onClick={() => triggerDownload(file.blob!, `${file.fileName.replace(/\.csv$/i, "")}_decrypted.csv`)}
-                        className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-700 transition-colors">
-                        <Download className="w-4 h-4" />Download {file.fileName}
-                      </button>
-                    )}
                     <button onClick={() => handleOpenDecryptCompare(file.id)}
-                      className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border-2 border-emerald-500 text-emerald-700 text-sm font-semibold hover:bg-emerald-50 transition-colors">
+                      className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border-2 border-emerald-500 text-emerald-700 text-sm font-semibold hover:bg-emerald-50 transition-colors">
                       <Columns2 className="w-4 h-4" />View {file.fileName} side by side
                     </button>
                   </div>
